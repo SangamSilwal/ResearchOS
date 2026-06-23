@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     database_url: str = "sqlite+aiosqlite:///./research_os.db"
     redis_url: str = "redis://localhost:6379/0"
     chroma_persist_dir: str = "./chroma_db"
-    orchestrator_model: str = "gemini/gemini-2.5-flash"
+    orchestrator_model: str = "groq/llama-3.3-70b-versatile"
     researcher_model: str = "groq/llama-3.3-70b-versatile"
     coder_model: str = "groq/qwen3-32b"
     critic_model: str = "mistral/devstral-small"
