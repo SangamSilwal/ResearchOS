@@ -8,6 +8,9 @@ from core.config import settings
 os.environ["GROQ_API_KEY"] = settings.groq_api_key
 os.environ["GOOGLE_API_KEY"] = settings.google_api_key
 os.environ["MISTRAL_API_KEY"] = settings.mistral_api_key
+os.environ["LANGCHAIN_TRACING_V2"] = str(settings.langchain_tracing_v2).lower()
+os.environ["LANGCHAIN_API_KEY"] = settings.langchain_api_key
+os.environ["LANGCHAIN_PROJECT"] = settings.langchain_project
 
 def get_llm(model_key: str) -> BaseChatModel:
     """
