@@ -5,6 +5,7 @@ from agents.base_agent import BaseAgent
 from agents.state import ResearchState
 from core.config import settings
 from langsmith.run_helpers import traceable
+import json
 
 class ResearcherAgent(BaseAgent):
 
@@ -19,18 +20,42 @@ class ResearcherAgent(BaseAgent):
                 "arxiv_search":{
                     "url":"http://localhost:8001/mcp",
                     "transport":"streamable_http"
-                }
+                },
+                "github": {
+                    "url": "https://api.githubcopilot.com/mcp/",
+                    "transport": "streamable_http",
+                    "headers": {
+                        "Authorization": f"Bearer {settings.github_token}"
+                    },
+                },
+
             }
         )
 
         self.web_search_tool = None
         self.arxiv_tool = None
+        self.github_search_tool = None
 
     async def initialize(self):
         tools = await self.mcp_client.get_tools()
         tools_by_name = {tool.name: tool for tool in tools}
         self.web_search_tool = tools_by_name["web_search"]
         self.arxiv_tool = tools_by_name["arxiv_search"]
+        self.github_search_tool = next(
+            (
+                tool
+                for name, tool in tools_by_name.items()
+                if name in ("search_repositories","search_repos")
+            ),
+            None,
+        )
+        if self.github_search_tool is None:
+            raise RuntimeError(
+                "Could not find a repository-search tool on the GitHub "
+                "MCP server. Run mcp_client.get_tools() and inspect "
+                "tool names — they may differ by server version/toolset."
+            )
+
 
     def system_prompt(self) -> str:
         return """
@@ -50,26 +75,96 @@ class ResearcherAgent(BaseAgent):
         Use clear sections and bullet points.
         """
     
+    # Shared MCP response Unwrapped
+    @staticmethod
+    def _unwrap_mcp_text(raw):
+        if (isinstance(raw,list) and raw and isinstance(raw[0],dict) and "text" in raw[0] and "type" in raw[0]):
+            return json.loads(raw[0]["text"])
+        if isinstance(raw,str):
+            return json.loads(raw)
+        if isinstance(raw, (list,dict)):
+            return raw
+        raise TypeError(f"Unrecognized MCP tool response type: {type(raw)}")
+
+
     @traceable(name="web_search")
     async def _search_web(self, query: str, max_results: int = 5) -> list[dict]:
         try:
-            results = await self.web_search_tool.ainvoke(
+            raw = await self.web_search_tool.ainvoke(
                 {"query": query, "max_results": max_results}
             )
-            return results or []
+            parsed = self._unwrap_mcp_text(raw)
+            results = (
+                parsed.get("results",[]) if isinstance(parsed,dict) else parsed
+            )
+            if not results:
+                return [
+                    {
+                        "url":None,
+                        "content":f"[web_search: 0 results parsed from response: {str(parsed)[:300]}]",
+                    }
+                ]
+            return results[:max_results]
         except Exception as e:
-            return [{"url": None, "content": f"[web_search error: {e}]"}]
+            return [{"url": None, "content": f"[web_search error: {type(e).__name__}: {e}]"}]
+
+
+
     @traceable(name="arxiv_search")
     async def _search_arxiv(self, query: str, max_results: int = 5) -> list[dict]:
         try:
-            results = await self.arxiv_tool.ainvoke(
+            raw = await self.arxiv_tool.ainvoke(
                 {"query": query, "max_results": max_results}
             )
-            return results or []
+            parsed = self._unwrap_mcp_text(raw)
+            if isinstance(parsed, dict):
+                results = [parsed]
+            else:
+                results = parsed or []
+            if not results:
+                return [
+                    {
+                        "url":None,
+                        "content":f"[arxiv: 0 results parsed from response: {str(parsed)[:300]}]",
+                    }
+                ]
+            return results[:max_results]
         except Exception as e:
-            return [{"url": None, "content": f"[arxiv error: {e}]"}]
+            return [{"url": None, "content": f"[arxiv error: {type(e).__name__} : {e}]"}]
+        
+    @traceable(name="github_search")
+    async def _search_github(self, query: str, max_results: int = 5) -> list[dict]:
+        try:
+            raw = await self.github_search_tool.ainvoke(
+                {"query": query, "perPage": max_results}
+            )
+            parsed = self._unwrap_mcp_text(raw)
+            items = parsed.get("items", []) if isinstance(parsed, dict) else parsed
+ 
+            if not items:
+                return [
+                    {
+                        "url": None,
+                        "title": None,
+                        "content": f"[github: 0 results parsed from response: {str(parsed)[:300]}]",
+                    }
+                ]
+ 
+            normalized = []
+            for repo in items[:max_results]:
+                normalized.append(
+                    {
+                        "url": repo.get("html_url") or repo.get("url"),
+                        "title": repo.get("full_name") or repo.get("name"),
+                        "stars": repo.get("stargazers_count") or repo.get("stars"),
+                        "content": (repo.get("description") or "").strip(),
+                    }
+                )
+            return normalized
+        except Exception as e:
+            return [{"url": None, "title": None, "content": f"[github error: {type(e).__name__}: {e}]"}]
+ 
     
-
     @staticmethod
     def _format_arxiv(results: list[dict]) -> str:
         if not results:
@@ -88,6 +183,7 @@ class ResearcherAgent(BaseAgent):
                 f"Abstract: {r.get('content', '')}"
             )
         return "\n\n".join(blocks)
+
     
     @staticmethod
     def _format_web(results: list[dict]) -> str:
@@ -97,6 +193,25 @@ class ResearcherAgent(BaseAgent):
             f"Source: {r.get('url', 'unknown')}\n{r.get('content', '')}"
             for r in results
         )
+
+     
+    @staticmethod
+    def _format_github(results: list[dict]) -> str:
+        if not results:
+            return "(no github results)"
+        blocks = []
+        for r in results:
+            if r.get("title") is None:
+                blocks.append(r.get("content", ""))
+                continue
+            blocks.append(
+                f"Repo: {r.get('title')} (\u2605 {r.get('stars', 0)})\n"
+                f"URL: {r.get('url')}\n"
+                f"Description: {r.get('content', '')}"
+            )
+        return "\n\n".join(blocks)
+
+
     @traceable(name="researcher_agent")
     async def run(self, state: ResearchState) -> dict:
         research_tasks = [
@@ -118,10 +233,12 @@ class ResearcherAgent(BaseAgent):
         task = research_tasks[0]
         query = f"{state['goal']} - {task['description']}"
 
-        web_results, arxiv_results = await asyncio.gather(
+        web_results, arxiv_results,github_results = await asyncio.gather(
             self._search_web(query,max_results=5),
-            self._search_arxiv(query,max_results=5)
+            self._search_arxiv(query,max_results=5),
+            self._search_github(query, max_results=5),
         )
+        
         prompt = f"""
         Task:
         {task['description']}
@@ -131,8 +248,12 @@ class ResearcherAgent(BaseAgent):
  
         ArXiv Paper Results:
         {self._format_arxiv(arxiv_results)}
+
+        GitHub Repository Results:
+        {self._format_github(github_results)}
+
  
-        Create a structured research summary that draws on all two
+        Create a structured research summary that draws on all three
         sources above. Call out which findings come from papers vs. general web sources where it matters.
         """
 
