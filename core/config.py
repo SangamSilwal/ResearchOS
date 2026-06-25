@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     coder_model: str = "groq/qwen3-32b"
     critic_model: str = "mistral/devstral-small"
     reasoner_model: str = "openrouter/deepseek/deepseek-r1:free"
+    github_token: str = ""
 
 
 @lru_cache
