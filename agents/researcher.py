@@ -232,13 +232,14 @@ class ResearcherAgent(BaseAgent):
             }
         task = research_tasks[0]
         query = f"{state['goal']} - {task['description']}"
+        github_query = task.get("title") or task.get("description")
 
         web_results, arxiv_results,github_results = await asyncio.gather(
             self._search_web(query,max_results=5),
             self._search_arxiv(query,max_results=5),
-            self._search_github(query, max_results=5),
+            self._search_github(github_query, max_results=5),
         )
-        
+
         prompt = f"""
         Task:
         {task['description']}
@@ -248,13 +249,21 @@ class ResearcherAgent(BaseAgent):
  
         ArXiv Paper Results:
         {self._format_arxiv(arxiv_results)}
-
+ 
         GitHub Repository Results:
         {self._format_github(github_results)}
-
  
         Create a structured research summary that draws on all three
-        sources above. Call out which findings come from papers vs. general web sources where it matters.
+        sources above. Call out which findings come from papers vs.
+        code vs. general web sources where it matters.
+ 
+        IMPORTANT: only cite an arXiv paper or GitHub repo if it is
+        genuinely relevant to the task topic. If the ArXiv Paper
+        Results are absent, empty, or clearly unrelated to the topic
+        (e.g. a software/engineering topic with no real academic
+        coverage), explicitly state that no relevant academic papers
+        were found rather than forcing a tenuous connection. Do not
+        manufacture relevance that isn't there.
         """
 
 
