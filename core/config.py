@@ -19,13 +19,14 @@ class Settings(BaseSettings):
     chroma_persist_dir: str = "./chroma_db"
     orchestrator_model: str = "groq/llama-3.3-70b-versatile"
     researcher_model: str = "groq/llama-3.3-70b-versatile"
-    coder_model: str = "groq/qwen3-32b"
+    coder_model: str = "groq/llama-3.3-70b-versatile"
     critic_model: str = "mistral/devstral-small"
     reasoner_model: str = "openrouter/deepseek/deepseek-r1:free"
     github_token: str = ""
     architect_model_a: str = "mistral/mistral-small"
     architect_model_b: str = "groq/llama-3.3-70b-versatile"
     architect_judge_model: str = "openrouter/owl-alpha"
+    output_dir: str = "./output" 
 
 
 
