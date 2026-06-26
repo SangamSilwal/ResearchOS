@@ -197,7 +197,7 @@ class ArchitectJudge(BaseAgent):
             }
         return verdict
 
-async def architech_node(state: ResearchState) -> dict:
+async def architect_node(state: ResearchState) -> dict:
     proposer_a = ArchitectProposer(settings.architect_model_a, proposer_id="A")
     proposer_b = ArchitectProposer(settings.architect_model_b, proposer_id="B")
     judge = ArchitectJudge(settings.architect_judge_model)
