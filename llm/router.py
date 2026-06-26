@@ -3,6 +3,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_mistralai import ChatMistralAI
 from langchain_groq import ChatGroq
 from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_openrouter import ChatOpenRouter
 from core.config import settings
 
 os.environ["GROQ_API_KEY"] = settings.groq_api_key
@@ -11,6 +12,7 @@ os.environ["MISTRAL_API_KEY"] = settings.mistral_api_key
 os.environ["LANGCHAIN_TRACING_V2"] = str(settings.langchain_tracing_v2).lower()
 os.environ["LANGCHAIN_API_KEY"] = settings.langchain_api_key
 os.environ["LANGCHAIN_PROJECT"] = settings.langchain_project
+os.environ["OPENROUTER_API_KEY"] = settings.openrouter_api_key
 
 def get_llm(model_key: str) -> BaseChatModel:
     """
@@ -37,6 +39,13 @@ def get_llm(model_key: str) -> BaseChatModel:
             model=model_name,
             temperature=0.1,
             max_retries=3,
+        )
+    
+    if provider == "openrouter":
+        return ChatOpenRouter(
+            model=model_name,
+            temperature=0.1,
+            max_retries=3
         )
  
     raise ValueError(
