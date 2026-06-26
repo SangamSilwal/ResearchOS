@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     github_token: str = ""
     architect_model_a: str = "mistral/mistral-small"
     architect_model_b: str = "groq/llama-3.3-70b-versatile"
-    architect_judge_model: str = "groq/llama-3.3-70b-versatile"
+    architect_judge_model: str = "openrouter/owl-alpha"
 
 
 
