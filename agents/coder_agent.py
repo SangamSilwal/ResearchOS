@@ -31,7 +31,7 @@ class CoderAgent(BaseAgent):
     
     def _find_file_path(self, task: dict, design: dict) -> str:
         file_structure = design.get("file_structure", [])
-        task_text = f"{task.get("title", "")} {task.get("description","")}".lower()
+        task_text = f"{task.get('title', '')} {task.get('description', '')}".lower()
         for entry in file_structure:
             path = entry.get("path","")
             purpose = entry.get("purpose","").lower()
@@ -116,7 +116,7 @@ class CoderAgent(BaseAgent):
         updated_tasks = state.get("tasks",[])
         for t in updated_tasks:
             if t["id"] == task["id"]:
-                t["status"] = "done" if write_error is None else "failed"
+                t["status"] = "coded" if write_error is None else "failed"
                 t["output_path"] = output_path
                 if write_error:
                     t["error"] = write_error
@@ -125,14 +125,15 @@ class CoderAgent(BaseAgent):
             for t in updated_tasks
             if t.get("agent") == "coder" and t.get("status") == "pending"
         ]
-        next_agent = "coder" if remaining else "done"
 
         if write_error:
+            next_agent = "coder" if remaining else "done"
             summary_line = (
                 f"[Coder] FAILED to write {output_path} for "
                 f"'{task.get('title')}': {write_error}"
             )
         else:
+            next_agent="critic"
             summary_line = f"[Coder] Wrote {output_path} for '{task.get('title')}'"
 
         return {
