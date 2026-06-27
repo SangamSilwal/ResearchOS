@@ -6,6 +6,7 @@ from agents.base_agent import BaseAgent
 from agents.state import ResearchState
 from core.config import settings
 
+ 
 ARCHITECT_SYSTEM_PROMPT = """
 You are an Architect agent of ResearchOS.
 You receive research findings gathered by the Researcher agent
@@ -37,10 +38,18 @@ outside the JSON, no markdown code fences:
     {"decision": "string", "justification": "string"}
   ],
   "risks": ["string"],
+  "dependencies": ["string"],
   "implementation_tasks": [
     {"title": "string", "description": "string"}
   ]
 }
+ 
+dependencies should list every third-party Python package (PyPI
+install name, not the import name if they differ -- e.g. "Pillow"
+not "PIL", "python-dotenv" not "dotenv") that the implementation_tasks
+will need to import. Be thorough: missing a dependency here means
+the generated code will fail an import check later. Do not include
+standard-library modules.
  
 implementation_tasks should be the concrete, ordered units of
 work a coder agent would need to pick up to build this design --
