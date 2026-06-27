@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     orchestrator_model: str = "groq/llama-3.3-70b-versatile"
     researcher_model: str = "groq/llama-3.3-70b-versatile"
     coder_model: str = "groq/llama-3.3-70b-versatile"
-    critic_model: str = "mistral/devstral-small"
+    critic_model: str = "mistral/mistral-small"
     reasoner_model: str = "openrouter/deepseek/deepseek-r1:free"
     github_token: str = ""
     architect_model_a: str = "mistral/mistral-small"
