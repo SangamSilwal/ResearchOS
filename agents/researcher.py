@@ -60,20 +60,28 @@ class ResearcherAgent(BaseAgent):
     def system_prompt(self) -> str:
         return """
         You are the Researcher agent of ResearchOS.
-        You receive search results, academic papers,
-        You receive search results and synthesize them into clear,
-        structured findings.
-
+        You receive search results, academic papers, and code repository
+        data, then synthesize them into clear, structured findings.
+ 
         For each topic:
         - Extract the most important facts and insights
         - Note best practices and recommendations
         - Identify tools, frameworks, and concepts
+        - Cite GitHub repos/implementations if genuinely useful
         - Flag contradictory or outdated information
-        - Cite relevant arXiv papers if they materially inform the answer
-
+ 
+        ArXiv papers: many topics (especially software engineering,
+        frameworks, and tools) have no real academic coverage. If the
+        retrieved arXiv papers are not substantively about the task
+        topic, do NOT cite them or attempt to draw a connection -- say
+        plainly that no relevant academic papers were found. Never
+        stretch an unrelated paper's subject matter into a tenuous
+        "lesson" just because it was retrieved.
+ 
         Be concise but complete.
         Use clear sections and bullet points.
         """
+
     
     # Shared MCP response Unwrapped
     @staticmethod
@@ -222,13 +230,35 @@ class ResearcherAgent(BaseAgent):
 
         if not research_tasks:
 
+            has_pending_architect_tasks = any(
+                t.get("agent") == "architect" and t.get("status") == "pending"
+                for t in state.get("tasks",[])
+            )
+
+            has_pending_coder_tasks = any(
+                t.get("agent") == "coder" and t.get("status") == "pending"
+                for t in state.get("tasks", [])
+            )
+
+            has_pending_planner_tasks = any(
+                t.get("agent") == "planner" and t.get("status") == "pending"
+                for t in state.get("tasks",[])
+            )
+
+            if has_pending_architect_tasks or has_pending_coder_tasks:
+                fallback_next = "architect"
+            elif has_pending_planner_tasks:
+                fallback_next = "planner"
+            else:
+                fallback_next = "done"
+
             return {
                 "messages":[
                     AIMessage(
                         content="[Researcher] No pending research tasks"
                     )
                 ],
-                "next_agent":"architect"
+                "next_agent":fallback_next
             }
         task = research_tasks[0]
         query = f"{state['goal']} - {task['description']}"
@@ -279,7 +309,9 @@ class ResearcherAgent(BaseAgent):
         all_sources = (
             [r.get("url") for r in web_results if r.get("url")]
             + [r.get("url") for r in arxiv_results if r.get("url")]
+            + [r.get("url") for r in github_results if r.get("url")]
         )
+
 
         finding = {
             "task_id": task["id"],
@@ -288,18 +320,34 @@ class ResearcherAgent(BaseAgent):
             "sources": all_sources
         }
 
-        remaining = [
+        remaining_researcher = [
             t
             for t in updated_tasks
-            if t.get("agent") == "researcher"
-            and t.get("status") == "pending"
+            if t.get("agent") == "researcher" and t.get("status") == "pending"
         ]
+ 
+        if remaining_researcher:
+            next_agent = "researcher"
+        else:
+            has_pending_architect_task = any(
+                t.get("agent") == "architect" and t.get("status") == "pending"
+                for t in updated_tasks
+            )
+            has_pending_coder_tasks = any(
+                t.get("agent") == "coder" and t.get("status") == "pending"
+                for t in updated_tasks
+            )
+            has_pending_planner_tasks = any(
+                t.get("agent") == "planner" and t.get("status") == "pending"
+                for t in updated_tasks
+            )
+            if has_pending_architect_task or has_pending_coder_tasks:
+                next_agent = "architect"
+            elif has_pending_planner_tasks:
+                next_agent = "planner"
+            else:
+                next_agent = "done"
 
-        next_agent = (
-            "researcher"
-            if remaining
-            else "architect"
-        )
         return {
             "messages": [
                 AIMessage(
