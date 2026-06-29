@@ -21,13 +21,12 @@ class Settings(BaseSettings):
     researcher_model: str = "groq/llama-3.3-70b-versatile"
     coder_model: str = "groq/llama-3.3-70b-versatile"
     critic_model: str = "mistral/mistral-small"
-    reasoner_model: str = "openrouter/deepseek/deepseek-r1:free"
+    planner_model: str = "mistral/mistral-small"
     github_token: str = ""
     architect_model_a: str = "mistral/mistral-small"
     architect_model_b: str = "groq/llama-3.3-70b-versatile"
     architect_judge_model: str = "openrouter/owl-alpha"
     output_dir: str = "./output" 
-
 
 
 @lru_cache
