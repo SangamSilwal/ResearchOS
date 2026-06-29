@@ -5,6 +5,7 @@ from agents.researcher import ResearcherAgent
 from agents.coder_agent import CoderAgent
 from agents.critic_agent import CriticAgent
 from agents.architect_agent import architect_node
+from agents.planner_agent import PlannerAgent
 
 
 _orchestrator_agent = OrchestratorAgent()
@@ -40,26 +41,16 @@ async def critic_node(state: ResearchState) -> dict:
     return await _critic_agent.run(state)
 
 
-NOT_IMPLEMENTED_AGENTS = {"planner"}
+_planner_agent = PlannerAgent()
 
-
-async def not_implemented_node(state: ResearchState) -> dict:
-    agent_name = state.get("next_agent", "unknown")
-    raise NotImplementedError(
-        f"'{agent_name}' agent is not implemented yet. "
-        f"The orchestrator routed here, but only researcher, architect, "
-        f"coder, and critic currently exist."
-    )
-
-
+async def planner_node(state: ResearchState) -> dict:
+    return await _planner_agent.run(state)
+ 
 def route_from_orchestrator(state: ResearchState) -> str:
     next_agent = state.get("next_agent", "researcher")
-    if next_agent in NOT_IMPLEMENTED_AGENTS:
-        return "not_implemented"
-    if next_agent in ("researcher", "architect", "coder", "critic"):
+    if next_agent in ("researcher", "architect", "coder", "critic", "planner"):
         return next_agent
-    return "not_implemented"
-
+    return "researcher"
 
 def route_from_researcher(state: ResearchState) -> str:
     return state.get("next_agent", "architect")
@@ -81,7 +72,7 @@ def build_graph():
     graph.add_node("architect", architect_node)
     graph.add_node("coder", coder_node)
     graph.add_node("critic", critic_node)
-    graph.add_node("not_implemented", not_implemented_node)
+    graph.add_node("planner", planner_node)
 
     graph.set_entry_point("orchestrator")
 
@@ -93,14 +84,14 @@ def build_graph():
             "architect": "architect",
             "coder": "coder",
             "critic": "critic",
-            "not_implemented": "not_implemented",
+            "planner": "planner",
         },
     )
 
     graph.add_conditional_edges(
         "researcher",
         route_from_researcher,
-        {"researcher": "researcher", "architect": "architect"},
+        {"researcher": "researcher", "architect": "architect","planner":"planner","done":END},
     )
 
     graph.add_edge("architect", "coder")
@@ -116,6 +107,8 @@ def build_graph():
         route_from_critic,
         {"critic": "critic", "coder": "coder", "done": END},
     )
+
+    graph.add_edge("planner",END)
 
     return graph.compile()
 
