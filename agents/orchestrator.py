@@ -3,6 +3,7 @@ from langchain_core.messages import AIMessage
 from agents.base_agent import BaseAgent
 from agents.state import ResearchState
 from core.config import settings
+from core.memory import get_recent_runs
 
 class OrchestratorAgent(BaseAgent):
 
@@ -69,8 +70,9 @@ Format:
 
     async def run(self, state: ResearchState) -> dict:
         goal = state["goal"]
+        recent_runs = await get_recent_runs(n=3)
         messages = self.build_messages(
-            f"Break down this goal into subtasks: \n\n {goal}"
+            f"Break down this goal into subtasks: \n\n {goal}",state=state,recent_runs=recent_runs
         )
 
         response = await self.llm.ainvoke(messages)

@@ -5,6 +5,7 @@ from agents.state import ResearchState
 from sandbox.code_checks import run_execution_checks
 from sandbox.project_venv import ensure_venv, install_packages, detect_missing_imports
 from core.config import settings
+from core.memory import get_recent_runs
 
 MAX_RETRIES_PER_TASK = 3
 
@@ -148,6 +149,8 @@ class CriticAgent(BaseAgent):
  
             Review this file as specified in your instructions.
             """
+            recent_runs = await get_recent_runs(n=3)
+            messages = self.build_messages(prompt,state=state,recent_runs=recent_runs)
             messages = self.build_messages(prompt)
             response = await self.llm.ainvoke(messages)
             verdict = self._parse_verdict(response.content, exec_result["checks"])

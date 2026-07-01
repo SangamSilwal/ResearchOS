@@ -5,6 +5,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from agents.base_agent import BaseAgent
 from agents.state import ResearchState
 from core.config import settings
+from core.memory import get_recent_runs
 
  
 ARCHITECT_SYSTEM_PROMPT = """
@@ -115,8 +116,8 @@ class ArchitectProposer(BaseAgent):
  
         Produce the system design as specified in your instructions.
         """
-
-        messages = self.build_messages(prompt)
+        recent_runs = await get_recent_runs(n=3)
+        messages = self.build_messages(prompt,state=state, recent_runs=recent_runs)
         response = await self.llm.ainvoke(messages)
         design = parse_design(response.content)
         design["_proposer_id"] = self.proposer_id
@@ -176,8 +177,8 @@ class ArchitectJudge(BaseAgent):
  
         Evaluate both designs as specified in your instructions.
         """
- 
-        messages = self.build_messages(prompt)
+        recent_runs = await get_recent_runs(n=3)
+        messages = self.build_messages(prompt,state=state,recent_runs=recent_runs)
         response = await self.llm.ainvoke(messages)
  
         try:

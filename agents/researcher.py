@@ -6,6 +6,7 @@ from agents.state import ResearchState
 from core.config import settings
 from langsmith.run_helpers import traceable
 import json
+from core.memory import get_recent_runs
 
 class ResearcherAgent(BaseAgent):
 
@@ -297,7 +298,8 @@ class ResearcherAgent(BaseAgent):
         """
 
 
-        messages = self.build_messages(prompt)
+        recent_runs = await get_recent_runs(n=3)
+        messages = self.build_messages(prompt,state=state,recent_runs=recent_runs)
         response = await self.llm.ainvoke(messages)
 
         updated_tasks = state.get("tasks",[])
