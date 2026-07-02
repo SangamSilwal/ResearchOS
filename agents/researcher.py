@@ -1,25 +1,28 @@
 import asyncio
+import json
+import os
 from langchain_core.messages import AIMessage
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from agents.base_agent import BaseAgent
 from agents.state import ResearchState
 from core.config import settings
 from langsmith.run_helpers import traceable
-import json
 from core.memory import get_recent_runs
 
 class ResearcherAgent(BaseAgent):
 
     def __init__(self):
         super().__init__(settings.researcher_model)
+        web_search_url = os.getenv("MCP_WEB_SEARCH_URL", "http://localhost:8000/mcp")
+        arxiv_url = os.getenv("MCP_ARXIV_URL", "http://localhost:8001/mcp")
         self.mcp_client = MultiServerMCPClient(
             {
                 "web_search": {
-                    "url":"http://localhost:8000/mcp",
+                    "url": web_search_url,
                     "transport":"streamable_http",
                 },
                 "arxiv_search":{
-                    "url":"http://localhost:8001/mcp",
+                    "url": arxiv_url,
                     "transport":"streamable_http"
                 },
                 "github": {
