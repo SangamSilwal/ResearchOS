@@ -6,7 +6,10 @@ from . import tools
 
 load_dotenv()
 
-mcp = FastMCP("web-search-mcp")
+HOST = os.getenv("MCP_HOST", "0.0.0.0")
+PORT = int(os.getenv("MCP_PORT", "8000"))
+
+mcp = FastMCP("web-search-mcp", host=HOST, port=PORT)
 
 
 
