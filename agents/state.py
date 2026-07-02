@@ -11,6 +11,7 @@ class ResearchState(TypedDict):
     architecture_design: dict[str, Any]
     architecture_competition: dict[str, Any]
     output: dict[str, Any]
+    summary: str | None
     next_agent: str
     error: str | None
     project_id: str | None
