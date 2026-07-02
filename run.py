@@ -21,6 +21,7 @@ async def main(goal: str, project_id: str) -> None:
         "tasks": [],
         "research_findings": [],
         "output": {},
+        "summary": None,
         "next_agent": "orchestrator",
         "error": None,
         "project_id": project_id,
@@ -43,6 +44,12 @@ async def main(goal: str, project_id: str) -> None:
     if final_state is None:
         print("(graph produced no events -- check for an early error)")
         return
+
+    summary_text = final_state.get("summary")
+    if summary_text:
+        print("\nFinal summary:\n")
+        print(summary_text)
+        print()
 
     tasks = final_state.get("tasks", [])
     by_status: dict[str, int] = {}
@@ -82,6 +89,7 @@ async def main(goal: str, project_id: str) -> None:
         files=written,
         flagged=[t.get("title", "") for t in flagged],
         task_summary=by_status,
+        summary=final_state.get("summary", ""),
     )
     print(f"\nRun summary saved to memory (project_id={project_id})")
 
