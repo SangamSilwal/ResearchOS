@@ -6,6 +6,7 @@ from agents.coder_agent import CoderAgent
 from agents.critic_agent import CriticAgent
 from agents.architect_agent import architect_node
 from agents.planner_agent import PlannerAgent
+from agents.summarizer_agent import SummarizerAgent
 
 
 _orchestrator_agent = OrchestratorAgent()
@@ -45,6 +46,11 @@ _planner_agent = PlannerAgent()
 
 async def planner_node(state: ResearchState) -> dict:
     return await _planner_agent.run(state)
+
+_summarizer_agent = SummarizerAgent()
+
+async def summarizer_node(state: ResearchState) -> dict:
+    return await _summarizer_agent.run(state)
  
 def route_from_orchestrator(state: ResearchState) -> str:
     next_agent = state.get("next_agent", "researcher")
@@ -73,6 +79,7 @@ def build_graph():
     graph.add_node("coder", coder_node)
     graph.add_node("critic", critic_node)
     graph.add_node("planner", planner_node)
+    graph.add_node("summarizer", summarizer_node)
 
     graph.set_entry_point("orchestrator")
 
@@ -91,7 +98,7 @@ def build_graph():
     graph.add_conditional_edges(
         "researcher",
         route_from_researcher,
-        {"researcher": "researcher", "architect": "architect","planner":"planner","done":END},
+        {"researcher": "researcher", "architect": "architect", "planner": "planner", "done": "summarizer"},
     )
 
     graph.add_edge("architect", "coder")
@@ -99,16 +106,17 @@ def build_graph():
     graph.add_conditional_edges(
         "coder",
         route_from_coder,
-        {"coder": "coder", "critic": "critic", "done": END},
+        {"coder": "coder", "critic": "critic", "done": "summarizer"},
     )
 
     graph.add_conditional_edges(
         "critic",
         route_from_critic,
-        {"critic": "critic", "coder": "coder", "done": END},
+        {"critic": "critic", "coder": "coder", "done": "summarizer"},
     )
 
-    graph.add_edge("planner",END)
+    graph.add_edge("planner","summarizer")
+    graph.add_edge("summarizer", END)
 
     return graph.compile()
 
