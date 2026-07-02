@@ -41,6 +41,14 @@ Given a high-level software engineering task, ResearchOS performs research, plan
 
 ---
 
+## Architecture
+
+<p align="center">
+  <img src="assets/multi_agent_architecture.png" alt="ResearchOS Architecture" width="100%">
+</p>
+
+The following diagram illustrates the overall ResearchOS workflow, showing how the specialized agents collaborate, interact with MCP servers, communicate with LLM providers, and produce the final software project.
+
 ## Agents
 
 ### Orchestrator
