@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     coder_model: str = "mistral/mistral-small"
     critic_model: str = "mistral/mistral-small"
     planner_model: str = "mistral/mistral-small"
+    summarizer_model: str = "mistral/mistral-small"
     github_token: str = ""
     architect_model_a: str = "mistral/mistral-small"
     architect_model_b: str = "mistral/mistral-small"
