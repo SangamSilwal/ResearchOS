@@ -30,25 +30,31 @@ def _sqlite_conn() -> sqlite3.Connection:
             created_at   REAL NOT NULL,
             files_written TEXT NOT NULL,   -- JSON list of paths
             flagged_tasks TEXT NOT NULL,   -- JSON list of task titles
-            task_summary  TEXT NOT NULL    -- JSON dict {status: count}
+            task_summary  TEXT NOT NULL,   -- JSON dict {status: count}
+            summary       TEXT NOT NULL
         )
         """
     )
+    # Migration guard: older databases may be missing the summary column.
+    cursor = conn.execute("PRAGMA table_info(run_memory)")
+    columns = [row[1] for row in cursor.fetchall()]
+    if "summary" not in columns:
+        conn.execute("ALTER TABLE run_memory ADD COLUMN summary TEXT NOT NULL DEFAULT ''")
     conn.commit()
     return conn
 
 
 def _sqlite_save(project_id: str, goal: str, files: list[str],
-                 flagged: list[str], task_summary: dict) -> None:
+                 flagged: list[str], task_summary: dict, summary: str) -> None:
     conn = _sqlite_conn()
     conn.execute(
         """
         INSERT OR REPLACE INTO run_memory
-            (project_id, goal, created_at, files_written, flagged_tasks, task_summary)
-        VALUES (?, ?, ?, ?, ?, ?)
+            (project_id, goal, created_at, files_written, flagged_tasks, task_summary, summary)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
         (project_id, goal, time.time(),
-         json.dumps(files), json.dumps(flagged), json.dumps(task_summary)),
+         json.dumps(files), json.dumps(flagged), json.dumps(task_summary), summary),
     )
     conn.commit()
     conn.close()
@@ -58,7 +64,7 @@ def _sqlite_recent(n: int) -> list[dict]:
     conn = _sqlite_conn()
     rows = conn.execute(
         """
-        SELECT project_id, goal, created_at, files_written, flagged_tasks, task_summary
+        SELECT project_id, goal, created_at, files_written, flagged_tasks, task_summary, summary
         FROM run_memory
         ORDER BY created_at DESC
         LIMIT ?
@@ -74,6 +80,7 @@ def _sqlite_recent(n: int) -> list[dict]:
             "files_written": json.loads(r[3]),
             "flagged_tasks": json.loads(r[4]),
             "task_summary": json.loads(r[5]),
+            "summary": r[6],
         }
         for r in rows
     ]
@@ -81,7 +88,7 @@ def _sqlite_recent(n: int) -> list[dict]:
 
 
 async def _pg_save(database_url: str, project_id: str, goal: str,
-                   files: list[str], flagged: list[str], task_summary: dict) -> None:
+                   files: list[str], flagged: list[str], task_summary: dict, summary: str) -> None:
     import asyncpg
 
     conn = await asyncpg.connect(database_url)
@@ -94,24 +101,26 @@ async def _pg_save(database_url: str, project_id: str, goal: str,
                 created_at   DOUBLE PRECISION NOT NULL,
                 files_written JSONB NOT NULL,
                 flagged_tasks JSONB NOT NULL,
-                task_summary  JSONB NOT NULL
+                task_summary  JSONB NOT NULL,
+                summary       TEXT NOT NULL
             )
             """
         )
         await conn.execute(
             """
             INSERT INTO run_memory
-                (project_id, goal, created_at, files_written, flagged_tasks, task_summary)
-            VALUES ($1, $2, $3, $4, $5, $6)
+                (project_id, goal, created_at, files_written, flagged_tasks, task_summary, summary)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
             ON CONFLICT (project_id) DO UPDATE SET
                 goal          = EXCLUDED.goal,
                 created_at    = EXCLUDED.created_at,
                 files_written = EXCLUDED.files_written,
                 flagged_tasks = EXCLUDED.flagged_tasks,
-                task_summary  = EXCLUDED.task_summary
+                task_summary  = EXCLUDED.task_summary,
+                summary       = EXCLUDED.summary
             """,
             project_id, goal, time.time(),
-            json.dumps(files), json.dumps(flagged), json.dumps(task_summary),
+            json.dumps(files), json.dumps(flagged), json.dumps(task_summary), summary,
         )
     finally:
         await conn.close()
@@ -125,7 +134,7 @@ async def _pg_recent(database_url: str, n: int) -> list[dict]:
         rows = await conn.fetch(
             """
             SELECT project_id, goal, created_at, files_written,
-                   flagged_tasks, task_summary
+                   flagged_tasks, task_summary, summary
             FROM run_memory
             ORDER BY created_at DESC
             LIMIT $1
@@ -142,6 +151,7 @@ async def _pg_recent(database_url: str, n: int) -> list[dict]:
             "files_written": json.loads(r["files_written"]),
             "flagged_tasks": json.loads(r["flagged_tasks"]),
             "task_summary": json.loads(r["task_summary"]),
+            "summary": r["summary"],
         }
         for r in rows
     ]
@@ -150,7 +160,7 @@ async def _pg_recent(database_url: str, n: int) -> list[dict]:
 
 async def save_run_memory(project_id: str, goal: str,
                           files: list[str], flagged: list[str],
-                          task_summary: dict) -> None:
+                          task_summary: dict, summary: str) -> None:
     """
     Call this at the end of a run to persist its summary.
     Works synchronously for SQLite (no async needed), async for
@@ -158,9 +168,9 @@ async def save_run_memory(project_id: str, goal: str,
     """
     database_url = _get_database_url()
     if database_url:
-        await _pg_save(database_url, project_id, goal, files, flagged, task_summary)
+        await _pg_save(database_url, project_id, goal, files, flagged, task_summary, summary)
     else:
-        _sqlite_save(project_id, goal, files, flagged, task_summary)
+        _sqlite_save(project_id, goal, files, flagged, task_summary, summary)
 
 
 async def get_recent_runs(n: int = DEFAULT_RECENT_RUNS) -> list[dict]:
@@ -194,9 +204,11 @@ def format_run_memory_for_prompt(runs: list[dict]) -> str:
             + (" ..." if len(r["files_written"]) > 5 else "")
             if r["files_written"] else ""
         )
+        summary_str = f"  Summary: {r['summary']}\n" if r.get("summary") else ""
         lines.append(
             f"- Goal: {r['goal']}\n"
             f"  Tasks: {status_str}\n"
+            f"{summary_str}"
             f"{files_str}\n"
             f"{flagged_str}"
         )
