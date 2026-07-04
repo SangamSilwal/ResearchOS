@@ -22,7 +22,7 @@ Think of it like a software engineering team:
 
 The diagram below shows how they connect:
 
-![ResearchOS Architecture](assets/multi_agent_architecture.png)
+![ResearchOS Architecture](../assets/multi_agent_architecture.png)
 
 ---
 
