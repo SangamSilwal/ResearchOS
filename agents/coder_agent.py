@@ -142,5 +142,3 @@ class CoderAgent(BaseAgent):
             "tasks":updated_tasks,
             "next_agent":next_agent
         }
-
-   

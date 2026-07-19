@@ -12,9 +12,13 @@ DEFAULT_RECENT_RUNS = 3
 
 
 def _get_database_url() -> str | None:
-    url = os.environ.get("DATABASE_URL", "")
-    if url.startswith("postgres"):
-        return url
+    raw = os.environ.get("RUN_MEMORY_DATABASE_URL") or os.environ.get("DATABASE_URL")
+    if not raw:
+        return None
+    if raw.startswith("postgresql+asyncpg://"):
+        return raw.replace("postgresql+asyncpg://", "postgresql://", 1)
+    if raw.startswith("postgresql://"):
+        return raw
     return None
 
 
