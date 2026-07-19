@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %}Settings · ResearchOS{% endblock %}
+{% block content %}
+<h1>Configuration</h1>
+<p class="muted">
+  Configure at least one LLM provider's API key, Tavily (required for web
+  search), and pick which model powers each agent. Model strings use the
+  format <code>provider/model-name</code> -- providers: groq, gemini,
+  mistral, openrouter. Suggestions are offered but you can type any
+  supported model string.
+</p>
+
+{% if missing_keys %}
+<div class="flash flash-warn">
+  Missing API key(s) for provider(s) currently assigned to an agent: {{ missing_keys|join(", ") }}.
+  Runs using those agents will fail until the key is added below.
+</div>
+{% endif %}
+
+<form method="post" action="/settings" class="settings-form">
+  <section class="card">
+    <h2>Provider API keys</h2>
+    <label>Tavily API key <span class="req">(required -- web search)</span>
+      <input type="password" name="tavily_api_key" value="{{ values.tavily_api_key }}" placeholder="tvly-...">
+      <span class="hint">Get one at tavily.com &rarr; API Keys</span>
+    </label>
+    <label>GitHub token <span class="req">(required -- repo search)</span>
+      <input type="password" name="github_token" value="{{ values.github_token }}" placeholder="github_pat_...">
+      <span class="hint">github.com/settings/tokens -- fine-grained, read-only public repos</span>
+    </label>
+    <label>Groq API key
+      <input type="password" name="groq_api_key" value="{{ values.groq_api_key }}" placeholder="gsk_...">
+    </label>
+    <label>Google (Gemini) API key
+      <input type="password" name="google_api_key" value="{{ values.google_api_key }}" placeholder="AIza...">
+    </label>
+    <label>Mistral API key
+      <input type="password" name="mistral_api_key" value="{{ values.mistral_api_key }}" placeholder="...">
+    </label>
+    <label>OpenRouter API key
+      <input type="password" name="openrouter_api_key" value="{{ values.openrouter_api_key }}" placeholder="sk-or-...">
+    </label>
+    <label>LangSmith API key <span class="req">(optional -- tracing)</span>
+      <input type="password" name="langchain_api_key" value="{{ values.langchain_api_key }}" placeholder="lsv2_...">
+    </label>
+  </section>
+
+  <section class="card">
+    <h2>Model per agent</h2>
+    {% for field, label in agent_labels.items() %}
+    <label>{{ label }}
+      <input type="text" name="{{ field }}" list="model-suggestions" value="{{ values[field] }}" placeholder="provider/model-name" required>
+    </label>
+    {% endfor %}
+    <datalist id="model-suggestions">
+      {% for provider, options in suggestions.items() %}
+        {% for opt in options %}<option value="{{ opt }}">{% endfor %}
+      {% endfor %}
+    </datalist>
+  </section>
+
+  <button type="submit">Save configuration</button>
+</form>
+{% endblock %}

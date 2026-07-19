@@ -44,6 +44,27 @@ The following diagram illustrates the overall ResearchOS workflow, showing how t
 
 ---
 
+## Web UI
+
+Prefer a browser to a terminal? Run:
+
+```
+pip install -r requirements.txt
+python serve.py
+```
+
+Then open `http://localhost:8080`. No `.env` file or prior setup needed --
+the app walks you through it:
+
+1. **Create an account** (first visit only) -- one username/password for this deployment.
+2. **Configure API keys** -- Tavily and a GitHub token are required; add whichever LLM provider keys you plan to use.
+3. **Pick a model per agent** -- orchestrator, researcher, architect (proposal A/B + judge), coder, critic, planner, summarizer each get their own `provider/model-name` field, so you can mix cheap and strong models.
+4. **Submit a goal** from the dashboard and watch the agents work in a live log, the same pipeline `run.py` drives from the CLI.
+
+Everything you configure is written to `.env`, so it's picked up by `run.py` too if you switch back to the CLI. The two MCP servers (web search, arxiv) are started automatically as background processes -- you don't need to run them separately like in Option B below.
+
+---
+
 ## Getting started
 
 Two ways to run ResearchOS. Pick whichever suits you.

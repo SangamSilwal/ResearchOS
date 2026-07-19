@@ -9,49 +9,38 @@ from agents.planner_agent import PlannerAgent
 from agents.summarizer_agent import SummarizerAgent
 
 
-_orchestrator_agent = OrchestratorAgent()
-
+# NOTE: agents are constructed fresh inside each node function (instead of
+# once as module-level singletons) so that model/API-key changes made
+# through the web UI's settings page take effect on the very next run
+# without needing to restart the process. This mirrors the pattern
+# `architect_node` already used.
 
 async def orchestrator_node(state: ResearchState) -> dict:
-    return await _orchestrator_agent.run(state)
-
-
-_researcher_agent = ResearcherAgent()
-_researcher_initialized = False
+    return await OrchestratorAgent().run(state)
 
 
 async def researcher_node(state: ResearchState) -> dict:
-    global _researcher_initialized
-    if not _researcher_initialized:
-        await _researcher_agent.initialize()
-        _researcher_initialized = True
-    return await _researcher_agent.run(state)
-
-
-_coder_agent = CoderAgent()
+    agent = ResearcherAgent()
+    await agent.initialize()
+    return await agent.run(state)
 
 
 async def coder_node(state: ResearchState) -> dict:
-    return await _coder_agent.run(state)
-
-
-_critic_agent = CriticAgent()
+    return await CoderAgent().run(state)
 
 
 async def critic_node(state: ResearchState) -> dict:
-    return await _critic_agent.run(state)
+    return await CriticAgent().run(state)
 
-
-_planner_agent = PlannerAgent()
 
 async def planner_node(state: ResearchState) -> dict:
-    return await _planner_agent.run(state)
+    return await PlannerAgent().run(state)
 
-_summarizer_agent = SummarizerAgent()
 
 async def summarizer_node(state: ResearchState) -> dict:
-    return await _summarizer_agent.run(state)
- 
+    return await SummarizerAgent().run(state)
+
+
 def route_from_orchestrator(state: ResearchState) -> str:
     next_agent = state.get("next_agent", "researcher")
     if next_agent in ("researcher", "architect", "coder", "critic", "planner"):
@@ -121,4 +110,8 @@ def build_graph():
     return graph.compile()
 
 
+# Kept for backwards compatibility (tests/full_graph_test.py imports this
+# directly). Safe at import time: compiling the graph only wires up the
+# node functions above, it does not construct any agent/LLM client until a
+# node actually runs -- so it does not freeze API keys or model choices.
 compiled_graph = build_graph()

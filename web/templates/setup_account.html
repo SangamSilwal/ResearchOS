@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Create account · ResearchOS{% endblock %}
+{% block content %}
+<div class="auth-card">
+  <h1>Welcome to ResearchOS</h1>
+  <p class="muted">No account exists yet on this deployment. Create the login you'll use to access this instance. Only one account is needed.</p>
+  <form method="post" action="/setup-account">
+    <label>Username
+      <input type="text" name="username" required autofocus>
+    </label>
+    <label>Password
+      <input type="password" name="password" required minlength="6">
+    </label>
+    <label>Confirm password
+      <input type="password" name="confirm_password" required minlength="6">
+    </label>
+    <button type="submit">Create account &amp; continue</button>
+  </form>
+</div>
+{% endblock %}

@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}Run {{ run_id }} · ResearchOS{% endblock %}
+{% block content %}
+<h1>{{ goal }}</h1>
+<p class="muted">Project ID: <code>{{ run_id }}</code></p>
+
+<section class="card">
+  <h2>Log</h2>
+  <pre id="log" class="log-box">{% for line in initial_log %}{{ line }}
+{% endfor %}</pre>
+</section>
+
+<section class="card" id="result-card" {% if not result %}hidden{% endif %}>
+  <h2>Result</h2>
+  <div id="result-body">
+    {% if result %}{% include "_result.html" %}{% endif %}
+  </div>
+</section>
+
+{% if live %}
+<script>
+  const evtSource = new EventSource("/run/{{ run_id }}/events");
+  const logBox = document.getElementById("log");
+  evtSource.onmessage = (e) => {
+    const data = JSON.parse(e.data);
+    if (data.type === "log") {
+      logBox.textContent += data.text + "\n";
+      logBox.scrollTop = logBox.scrollHeight;
+    } else if (data.type === "error") {
+      logBox.textContent += "ERROR: " + data.text + "\n";
+    } else if (data.type === "done") {
+      window.location.reload();
+    }
+  };
+  evtSource.addEventListener("end", () => evtSource.close());
+</script>
+{% endif %}
+{% endblock %}

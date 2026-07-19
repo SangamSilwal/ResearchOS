@@ -27,7 +27,9 @@ class Settings(BaseSettings):
     architect_model_a: str = "mistral/mistral-small"
     architect_model_b: str = "mistral/mistral-small"
     architect_judge_model: str = "mistral/mistral-small"
-    output_dir: str = "./output" 
+    output_dir: str = "./output"
+    web_username: str = ""
+    web_password_hash: str = ""
 
 
 @lru_cache
