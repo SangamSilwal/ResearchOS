@@ -8,11 +8,13 @@ from agents.state import ResearchState
 from core.config import settings
 from langsmith.run_helpers import traceable
 from core.memory import get_recent_runs
+from core.runtime import resolve_model
 
 class ResearcherAgent(BaseAgent):
 
     def __init__(self):
-        super().__init__(settings.researcher_model)
+        model_key, api_key = resolve_model("researcher_model", settings.researcher_model)
+        super().__init__(model_key, api_key)
         web_search_url = os.getenv("MCP_WEB_SEARCH_URL", "http://localhost:8000/mcp")
         arxiv_url = os.getenv("MCP_ARXIV_URL", "http://localhost:8001/mcp")
         self.mcp_client = MultiServerMCPClient(

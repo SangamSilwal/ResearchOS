@@ -2,13 +2,29 @@ import asyncio
 import os
 import sys
 from logging.config import fileConfig
+<<<<<<< ours
+=======
+from pathlib import Path
+
+>>>>>>> theirs
 from alembic import context
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
+<<<<<<< ours
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from database import Base  
 import models  
+=======
+
+# web/alembic/env.py -> parents[2] is the repo root, so `web.*` imports
+# below resolve the same way they do when the app itself runs.
+REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT))
+
+from web.database import Base  # noqa: E402
+import web.models  # noqa: E402,F401 -- registers every table on Base.metadata
+>>>>>>> theirs
 
 config = context.config
 db_url = os.environ.get("DATABASE_URL")
@@ -16,10 +32,15 @@ if not db_url:
     raise RuntimeError(
         "DATABASE_URL is not set in this shell. Set it before running "
         "alembic, e.g.:\n\n"
+<<<<<<< ours
         '  export DATABASE_URL="postgresql+asyncpg://user:pass@localhost:5432/dbname"\n\n'
         "Without it, SQLAlchemy falls back to a bare local connection, "
         "which is almost certainly not what you want (and is likely why "
         "you're seeing an 'Ident authentication failed' error)."
+=======
+        '  export DATABASE_URL="postgresql+asyncpg://postgres:[password]@db.[project-ref].supabase.co:5432/postgres"\n\n'
+        "(the same connection string used in .env -- see .env.example)"
+>>>>>>> theirs
     )
 config.set_main_option("sqlalchemy.url", db_url)
 
@@ -49,7 +70,10 @@ def do_run_migrations(connection: Connection) -> None:
 
 
 async def run_migrations_online() -> None:
+<<<<<<< ours
     """Standard path — connects with the async engine and applies migrations."""
+=======
+>>>>>>> theirs
     connectable = async_engine_from_config(
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
@@ -65,4 +89,8 @@ async def run_migrations_online() -> None:
 if context.is_offline_mode():
     run_migrations_offline()
 else:
+<<<<<<< ours
     asyncio.run(run_migrations_online())
+=======
+    asyncio.run(run_migrations_online())
+>>>>>>> theirs

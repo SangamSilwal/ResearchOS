@@ -5,11 +5,13 @@ from agents.base_agent import BaseAgent
 from agents.state import ResearchState
 from core.config import settings
 from core.memory import get_recent_runs
+from core.runtime import resolve_model
 
 class CoderAgent(BaseAgent):
 
     def __init__(self):
-        super().__init__(settings.coder_model)
+        model_key, api_key = resolve_model("coder_model", settings.coder_model)
+        super().__init__(model_key, api_key)
 
     def system_prompt(self) -> str:
         return """

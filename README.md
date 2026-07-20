@@ -44,30 +44,93 @@ The following diagram illustrates the overall ResearchOS workflow, showing how t
 
 ---
 
-## Web UI
+## Web API
 
-Prefer a browser to a terminal? Run:
+A multi-user, JSON-only REST API (FastAPI) -- no server-rendered pages;
+build a React/Next.js (or any) frontend against it separately. Auth is
+Google/GitHub OAuth issuing a JWT, per-user LLM provider keys are
+encrypted at rest, and the database is Postgres (Supabase).
+
+### Setup
 
 ```
 pip install -r requirements.txt
-python serve.py
 ```
 
-Then open `http://localhost:8080`. No `.env` file or prior setup needed --
-the app walks you through it:
+1. **Database.** Create a Supabase project, grab its Postgres connection
+   string (Project Settings -> Database -> Connection string -> URI),
+   and put it in `.env` as `DATABASE_URL` (see `.env.example` -- swap
+   `postgresql://` for `postgresql+asyncpg://`). Then run migrations:
+   ```
+   alembic upgrade head
+   ```
+2. **OAuth apps.** Create a Google OAuth client and a GitHub OAuth app
+   (see `.env.example` for where), and register
+   `{OAUTH_REDIRECT_BASE_URL}/auth/google/callback` and
+   `.../auth/github/callback` as their redirect URIs. Put the
+   client ID/secret pairs in `.env`.
+3. **Platform default key.** Set `GROQ_API_KEY` in `.env`. Every agent
+   defaults to Groq (see `web/model_defaults.py`), so this one key is
+   enough for any new account to run goals immediately -- see
+   "API keys & model selection" below.
+4. **Run it:**
+   ```
+   python serve.py
+   ```
+   The two MCP servers (web search, arxiv) start automatically as
+   background processes. `GET /health` should return `{"status": "ok"}`.
 
-1. **Create an account** (first visit only) -- one username/password for this deployment.
-2. **Configure API keys** -- Tavily and a GitHub token are required; add whichever LLM provider keys you plan to use.
-3. **Pick a model per agent** -- orchestrator, researcher, architect (proposal A/B + judge), coder, critic, planner, summarizer each get their own `provider/model-name` field, so you can mix cheap and strong models.
-4. **Submit a goal** from the dashboard and watch the agents work in a live log, the same pipeline `run.py` drives from the CLI.
+### Auth
 
-Everything you configure is written to `.env`, so it's picked up by `run.py` too if you switch back to the CLI. The two MCP servers (web search, arxiv) are started automatically as background processes -- you don't need to run them separately like in Option B below.
+```
+GET  /auth/{google|github}/login      -- redirects to the provider's consent screen
+GET  /auth/{google|github}/callback   -- provider redirects here; issues a JWT
+GET  /auth/me                         -- current user (Authorization: Bearer <jwt>)
+```
+With `FRONTEND_URL` unset, `/callback` returns the JWT as JSON (handy
+for testing via Swagger's "Authorize" button or curl). Once you have a
+frontend, set `FRONTEND_URL` and it redirects there with `?token=...` instead.
+
+### API keys & model selection
+
+Every agent role (orchestrator, researcher, architect proposal A/B +
+judge, planner, coder, critic, summarizer) defaults to Groq, billed to
+the platform's own key -- **a new account can submit a goal with zero
+configuration.** To use a different provider for a role, add your own
+key for it and point that role at it:
+
+```
+PUT  /api/settings/keys/{gemini|mistral|openrouter}   {"api_key": "..."}
+GET  /api/settings/keys                               -- providers you've configured (never returns the raw key)
+DELETE /api/settings/keys/{provider}
+
+GET  /api/settings/agent-models                       -- current model per role (yours or the default)
+PUT  /api/settings/agent-models                        {"coder": "mistral/codestral-latest", ...}
+
+GET  /api/settings/status                              -- which providers are configured / referenced-but-missing
+```
+Keys are encrypted (AES-256-GCM) before they touch the database --
+see `web/crypto.py`. If you point a role at a provider you haven't
+added a key for, that role silently falls back to the platform default
+for that run rather than failing it; `GET /api/settings/status` tells
+you when that's happening.
+
+### Running a goal
+
+```
+POST /api/runs              {"goal": "...", "thread_id": "<uuid, optional>"}
+GET  /api/runs               -- your run history
+GET  /api/runs/{id}          -- status, summary, task breakdown
+GET  /api/runs/{id}/stream   -- Server-Sent Events, live agent output
+GET  /api/runs/{id}/download -- zip of any files the coder agent wrote (404 if it was a research-only run)
+```
 
 ---
 
 ## Getting started
 
 Two ways to run ResearchOS. Pick whichever suits you.
+
 
 ---
 

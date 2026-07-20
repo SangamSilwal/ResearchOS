@@ -13,9 +13,16 @@ DEFAULT_RECENT_RUNS = 3
 
 def _get_database_url() -> str | None:
     url = os.environ.get("DATABASE_URL", "")
-    if url.startswith("postgres"):
-        return url
-    return None
+    if not url.startswith("postgres"):
+        return None
+    # asyncpg.connect() wants a plain postgres DSN. web/database.py (the
+    # SQLAlchemy engine used by the web API) uses the same DATABASE_URL
+    # env var but with a "+asyncpg" dialect suffix -- strip it here so
+    # both can share one env var.
+    if "+" in url.split("://", 1)[0]:
+        scheme = url.split("://", 1)[0].split("+", 1)[0]
+        url = f"{scheme}://{url.split('://', 1)[1]}"
+    return url
 
 
 

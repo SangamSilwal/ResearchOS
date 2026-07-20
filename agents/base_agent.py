@@ -5,8 +5,8 @@ from agents.state import ResearchState
 
 class BaseAgent(ABC):
 
-    def __init__(self,model_key:str):
-        self.llm = get_llm(model_key)
+    def __init__(self,model_key:str, api_key: str | None = None):
+        self.llm = get_llm(model_key, api_key)
         self.name = self.__class__.__name__
 
     @abstractmethod

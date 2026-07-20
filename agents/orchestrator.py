@@ -4,11 +4,13 @@ from agents.base_agent import BaseAgent
 from agents.state import ResearchState
 from core.config import settings
 from core.memory import get_recent_runs
+from core.runtime import resolve_model
 
 class OrchestratorAgent(BaseAgent):
 
     def __init__(self):
-        super().__init__(settings.orchestrator_model)
+        model_key, api_key = resolve_model("orchestrator_model", settings.orchestrator_model)
+        super().__init__(model_key, api_key)
 
     def system_prompt(self) -> str:
         return """You are the Orchestrator of ResearchOS, an autonomous AI research platform.

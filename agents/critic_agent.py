@@ -6,13 +6,15 @@ from sandbox.code_checks import run_execution_checks
 from sandbox.project_venv import ensure_venv, install_packages, detect_missing_imports
 from core.config import settings
 from core.memory import get_recent_runs
+from core.runtime import resolve_model
 
 MAX_RETRIES_PER_TASK = 3
 
 class CriticAgent(BaseAgent):
 
     def __init__(self):
-        super().__init__(settings.critic_model)
+        model_key, api_key = resolve_model("critic_model", settings.critic_model)
+        super().__init__(model_key, api_key)
 
     def system_prompt(self) -> str:
         return """

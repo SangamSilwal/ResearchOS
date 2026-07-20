@@ -1,0 +1,3530 @@
+From 0ed96f96128b90c9f636a5dbc0617101d723a87c Mon Sep 17 00:00:00 2001
+From: researchos-web <a@a.com>
+Date: Mon, 20 Jul 2026 02:57:26 +0000
+Subject: [PATCH] API-only backend: OAuth+JWT auth, Postgres/Supabase via
+ SQLAlchemy+Alembic, encrypted per-user API keys, per-agent model config, zip
+ download for build runs
+
+---
+ .env.example                                |  45 +++-
+ README.md                                   |  83 +++++-
+ agents/architect_agent.py                   |  19 +-
+ agents/base_agent.py                        |   4 +-
+ agents/coder_agent.py                       |   4 +-
+ agents/critic_agent.py                      |   4 +-
+ agents/orchestrator.py                      |   4 +-
+ agents/planner_agent.py                     |   4 +-
+ agents/researcher.py                        |   4 +-
+ agents/summarizer_agent.py                  |   4 +-
+ alembic.ini                                 |  41 +++
+ core/config.py                              |  67 ++++-
+ core/memory.py                              |  13 +-
+ core/runtime.py                             |  82 ++++++
+ llm/router.py                               |  44 ++--
+ requirements.txt                            |  15 +-
+ serve.py                                    |  12 +-
+ web/alembic/env.py                          |  72 ++++++
+ web/alembic/script.py.mako                  |  26 ++
+ web/alembic/versions/0001_initial_schema.py | 185 ++++++++++++++
+ web/app.py                                  | 245 +++---------------
+ web/config_resolution.py                    |  69 +++++
+ web/config_store.py                         | 158 ------------
+ web/crypto.py                               |  39 +++
+ web/database.py                             |  62 +++++
+ web/model_defaults.py                       |  42 +++
+ web/models.py                               | 268 ++++++++++++++++++++
+ web/oauth.py                                |  32 +++
+ web/routes/__init__.py                      |   0
+ web/routes/auth.py                          | 112 ++++++++
+ web/routes/runs.py                          | 144 +++++++++++
+ web/routes/settings.py                      | 190 ++++++++++++++
+ web/run_manager.py                          | 180 ++++++++-----
+ web/schemas.py                              | 101 ++++++++
+ web/security.py                             | 104 ++++----
+ web/static/style.css                        | 145 -----------
+ web/templates/_result.html                  |  29 ---
+ web/templates/base.html                     |  26 --
+ web/templates/dashboard.html                |  33 ---
+ web/templates/login.html                    |  16 --
+ web/templates/run.html                      |  38 ---
+ web/templates/settings.html                 |  64 -----
+ web/templates/setup_account.html            |  20 --
+ web/zip_utils.py                            |  30 +++
+ 44 files changed, 1935 insertions(+), 944 deletions(-)
+ create mode 100644 alembic.ini
+ create mode 100644 core/runtime.py
+ create mode 100644 web/alembic/env.py
+ create mode 100644 web/alembic/script.py.mako
+ create mode 100644 web/alembic/versions/0001_initial_schema.py
+ create mode 100644 web/config_resolution.py
+ delete mode 100644 web/config_store.py
+ create mode 100644 web/crypto.py
+ create mode 100644 web/database.py
+ create mode 100644 web/model_defaults.py
+ create mode 100644 web/models.py
+ create mode 100644 web/oauth.py
+ create mode 100644 web/routes/__init__.py
+ create mode 100644 web/routes/auth.py
+ create mode 100644 web/routes/runs.py
+ create mode 100644 web/routes/settings.py
+ create mode 100644 web/schemas.py
+ delete mode 100644 web/static/style.css
+ delete mode 100644 web/templates/_result.html
+ delete mode 100644 web/templates/base.html
+ delete mode 100644 web/templates/dashboard.html
+ delete mode 100644 web/templates/login.html
+ delete mode 100644 web/templates/run.html
+ delete mode 100644 web/templates/settings.html
+ delete mode 100644 web/templates/setup_account.html
+ create mode 100644 web/zip_utils.py
+
+diff --git a/.env.example b/.env.example
+index 4a0c9f1..a70e081 100644
+--- a/.env.example
++++ b/.env.example
+@@ -1,19 +1,46 @@
+-# Used to sign the web UI's session cookie and salt the login password
+-# hash. Set this to a long random value before deploying publicly.
++# Signs JWTs, salts encrypted API keys (web/crypto.py), and signs the
++# transient OAuth-handshake session cookie. Set this to a long random
++# value before deploying publicly -- rotating it later invalidates all
++# issued JWTs AND makes previously-encrypted user API keys undecryptable.
+ SECRET_KEY=dev-secret-key
+ 
++# ---- platform-level provider keys ----------------------------------
++# GROQ_API_KEY is the important one: every agent defaults to Groq (see
++# web/model_defaults.py), so this key is what powers a brand new
++# account with zero setup. The others are only used if you, the
++# operator, want the platform itself to fall back to them too --
++# otherwise each user brings their own via the API (see README).
+ GROQ_API_KEY=
+ GOOGLE_API_KEY=
+ MISTRAL_API_KEY=
++OPENROUTER_API_KEY=
++
+ TAVILY_API_KEY=
++GITHUB_TOKEN=
++
+ LANGCHAIN_TRACING_V2=true
+ LANGCHAIN_API_KEY=
+ LANGCHAIN_PROJECT=research-os
+-GITHUB_TOKEN=
+-OPENROUTER_API_KEY=
+ 
+-# Written automatically by the web UI (web/) on first run -- no need to
+-# set these by hand. Leaving them blank triggers the account-creation
+-# screen the first time you open the app.
+-WEB_USERNAME=
+-WEB_PASSWORD_HASH=
+\ No newline at end of file
++# ---- database (Postgres via Supabase) -------------------------------
++# Supabase dashboard -> Project Settings -> Database -> Connection
++# string -> "URI". Copy it, then change the "postgresql://" prefix to
++# "postgresql+asyncpg://" (SQLAlchemy's async Postgres driver).
++DATABASE_URL=postgresql+asyncpg://postgres:[YOUR-PASSWORD]@db.[PROJECT-REF].supabase.co:5432/postgres
++
++# ---- OAuth (Google + GitHub login) -----------------------------------
++# Google: console.cloud.google.com -> APIs & Services -> Credentials
++# GitHub: github.com/settings/developers -> OAuth Apps
++# Authorized redirect URIs to register on both:
++#   {OAUTH_REDIRECT_BASE_URL}/auth/google/callback
++#   {OAUTH_REDIRECT_BASE_URL}/auth/github/callback
++GOOGLE_CLIENT_ID=
++GOOGLE_CLIENT_SECRET=
++GITHUB_CLIENT_ID=
++GITHUB_CLIENT_SECRET=
++OAUTH_REDIRECT_BASE_URL=http://localhost:8080
++
++# Where to send the browser after login, with the JWT as ?token=...
++# Leave blank until you have a frontend -- the callback then returns the
++# token as JSON instead, which is fine for testing via curl/Swagger.
++FRONTEND_URL=
+diff --git a/README.md b/README.md
+index 2bd2838..9d027ea 100644
+--- a/README.md
++++ b/README.md
+@@ -44,24 +44,86 @@ The following diagram illustrates the overall ResearchOS workflow, showing how t
+ 
+ ---
+ 
+-## Web UI
++## Web API
+ 
+-Prefer a browser to a terminal? Run:
++A multi-user, JSON-only REST API (FastAPI) -- no server-rendered pages;
++build a React/Next.js (or any) frontend against it separately. Auth is
++Google/GitHub OAuth issuing a JWT, per-user LLM provider keys are
++encrypted at rest, and the database is Postgres (Supabase).
++
++### Setup
+ 
+ ```
+ pip install -r requirements.txt
+-python serve.py
+ ```
+ 
+-Then open `http://localhost:8080`. No `.env` file or prior setup needed --
+-the app walks you through it:
++1. **Database.** Create a Supabase project, grab its Postgres connection
++   string (Project Settings -> Database -> Connection string -> URI),
++   and put it in `.env` as `DATABASE_URL` (see `.env.example` -- swap
++   `postgresql://` for `postgresql+asyncpg://`). Then run migrations:
++   ```
++   alembic upgrade head
++   ```
++2. **OAuth apps.** Create a Google OAuth client and a GitHub OAuth app
++   (see `.env.example` for where), and register
++   `{OAUTH_REDIRECT_BASE_URL}/auth/google/callback` and
++   `.../auth/github/callback` as their redirect URIs. Put the
++   client ID/secret pairs in `.env`.
++3. **Platform default key.** Set `GROQ_API_KEY` in `.env`. Every agent
++   defaults to Groq (see `web/model_defaults.py`), so this one key is
++   enough for any new account to run goals immediately -- see
++   "API keys & model selection" below.
++4. **Run it:**
++   ```
++   python serve.py
++   ```
++   The two MCP servers (web search, arxiv) start automatically as
++   background processes. `GET /health` should return `{"status": "ok"}`.
++
++### Auth
++
++```
++GET  /auth/{google|github}/login      -- redirects to the provider's consent screen
++GET  /auth/{google|github}/callback   -- provider redirects here; issues a JWT
++GET  /auth/me                         -- current user (Authorization: Bearer <jwt>)
++```
++With `FRONTEND_URL` unset, `/callback` returns the JWT as JSON (handy
++for testing via Swagger's "Authorize" button or curl). Once you have a
++frontend, set `FRONTEND_URL` and it redirects there with `?token=...` instead.
++
++### API keys & model selection
++
++Every agent role (orchestrator, researcher, architect proposal A/B +
++judge, planner, coder, critic, summarizer) defaults to Groq, billed to
++the platform's own key -- **a new account can submit a goal with zero
++configuration.** To use a different provider for a role, add your own
++key for it and point that role at it:
++
++```
++PUT  /api/settings/keys/{gemini|mistral|openrouter}   {"api_key": "..."}
++GET  /api/settings/keys                               -- providers you've configured (never returns the raw key)
++DELETE /api/settings/keys/{provider}
++
++GET  /api/settings/agent-models                       -- current model per role (yours or the default)
++PUT  /api/settings/agent-models                        {"coder": "mistral/codestral-latest", ...}
+ 
+-1. **Create an account** (first visit only) -- one username/password for this deployment.
+-2. **Configure API keys** -- Tavily and a GitHub token are required; add whichever LLM provider keys you plan to use.
+-3. **Pick a model per agent** -- orchestrator, researcher, architect (proposal A/B + judge), coder, critic, planner, summarizer each get their own `provider/model-name` field, so you can mix cheap and strong models.
+-4. **Submit a goal** from the dashboard and watch the agents work in a live log, the same pipeline `run.py` drives from the CLI.
++GET  /api/settings/status                              -- which providers are configured / referenced-but-missing
++```
++Keys are encrypted (AES-256-GCM) before they touch the database --
++see `web/crypto.py`. If you point a role at a provider you haven't
++added a key for, that role silently falls back to the platform default
++for that run rather than failing it; `GET /api/settings/status` tells
++you when that's happening.
+ 
+-Everything you configure is written to `.env`, so it's picked up by `run.py` too if you switch back to the CLI. The two MCP servers (web search, arxiv) are started automatically as background processes -- you don't need to run them separately like in Option B below.
++### Running a goal
++
++```
++POST /api/runs              {"goal": "...", "thread_id": "<uuid, optional>"}
++GET  /api/runs               -- your run history
++GET  /api/runs/{id}          -- status, summary, task breakdown
++GET  /api/runs/{id}/stream   -- Server-Sent Events, live agent output
++GET  /api/runs/{id}/download -- zip of any files the coder agent wrote (404 if it was a research-only run)
++```
+ 
+ ---
+ 
+@@ -69,6 +131,7 @@ Everything you configure is written to `.env`, so it's picked up by `run.py` too
+ 
+ Two ways to run ResearchOS. Pick whichever suits you.
+ 
++
+ ---
+ 
+ ### Option A — Docker (recommended, no Python required)
+diff --git a/agents/architect_agent.py b/agents/architect_agent.py
+index 5a64625..e017fa7 100644
+--- a/agents/architect_agent.py
++++ b/agents/architect_agent.py
+@@ -6,6 +6,7 @@ from agents.base_agent import BaseAgent
+ from agents.state import ResearchState
+ from core.config import settings
+ from core.memory import get_recent_runs
++from core.runtime import resolve_model
+ 
+  
+ ARCHITECT_SYSTEM_PROMPT = """
+@@ -96,8 +97,8 @@ def parse_design(raw_content: str) -> dict:
+ 
+ class ArchitectProposer(BaseAgent):
+ 
+-    def __init__(self, model_name:str, proposer_id:str):
+-        super().__init__(model_name)
++    def __init__(self, model_name:str, proposer_id:str, api_key: str | None = None):
++        super().__init__(model_name, api_key)
+         self.proposer_id = proposer_id
+         self.model_name = model_name
+ 
+@@ -155,8 +156,8 @@ fences:
+ 
+ class ArchitectJudge(BaseAgent):
+ 
+-    def __init__(self, model_name:str):
+-        super().__init__(model_name)
++    def __init__(self, model_name:str, api_key: str | None = None):
++        super().__init__(model_name, api_key)
+ 
+     def system_prompt(self) -> str:
+         return JUDGE_SYSTEM_PROMPT
+@@ -208,9 +209,13 @@ class ArchitectJudge(BaseAgent):
+         return verdict
+ 
+ async def architect_node(state: ResearchState) -> dict:
+-    proposer_a = ArchitectProposer(settings.architect_model_a, proposer_id="A")
+-    proposer_b = ArchitectProposer(settings.architect_model_b, proposer_id="B")
+-    judge = ArchitectJudge(settings.architect_judge_model)
++    model_a, key_a = resolve_model("architect_model_a", settings.architect_model_a)
++    model_b, key_b = resolve_model("architect_model_b", settings.architect_model_b)
++    model_j, key_j = resolve_model("architect_judge_model", settings.architect_judge_model)
++
++    proposer_a = ArchitectProposer(model_a, proposer_id="A", api_key=key_a)
++    proposer_b = ArchitectProposer(model_b, proposer_id="B", api_key=key_b)
++    judge = ArchitectJudge(model_j, api_key=key_j)
+ 
+     design_a, design_b = await asyncio.gather(
+         proposer_a.run(state),
+diff --git a/agents/base_agent.py b/agents/base_agent.py
+index f29d811..87adeaf 100644
+--- a/agents/base_agent.py
++++ b/agents/base_agent.py
+@@ -5,8 +5,8 @@ from agents.state import ResearchState
+ 
+ class BaseAgent(ABC):
+ 
+-    def __init__(self,model_key:str):
+-        self.llm = get_llm(model_key)
++    def __init__(self,model_key:str, api_key: str | None = None):
++        self.llm = get_llm(model_key, api_key)
+         self.name = self.__class__.__name__
+ 
+     @abstractmethod
+diff --git a/agents/coder_agent.py b/agents/coder_agent.py
+index 26f4d4e..93a0b82 100644
+--- a/agents/coder_agent.py
++++ b/agents/coder_agent.py
+@@ -5,11 +5,13 @@ from agents.base_agent import BaseAgent
+ from agents.state import ResearchState
+ from core.config import settings
+ from core.memory import get_recent_runs
++from core.runtime import resolve_model
+ 
+ class CoderAgent(BaseAgent):
+ 
+     def __init__(self):
+-        super().__init__(settings.coder_model)
++        model_key, api_key = resolve_model("coder_model", settings.coder_model)
++        super().__init__(model_key, api_key)
+ 
+     def system_prompt(self) -> str:
+         return """
+diff --git a/agents/critic_agent.py b/agents/critic_agent.py
+index 2cfa064..81d2827 100644
+--- a/agents/critic_agent.py
++++ b/agents/critic_agent.py
+@@ -6,13 +6,15 @@ from sandbox.code_checks import run_execution_checks
+ from sandbox.project_venv import ensure_venv, install_packages, detect_missing_imports
+ from core.config import settings
+ from core.memory import get_recent_runs
++from core.runtime import resolve_model
+ 
+ MAX_RETRIES_PER_TASK = 3
+ 
+ class CriticAgent(BaseAgent):
+ 
+     def __init__(self):
+-        super().__init__(settings.critic_model)
++        model_key, api_key = resolve_model("critic_model", settings.critic_model)
++        super().__init__(model_key, api_key)
+ 
+     def system_prompt(self) -> str:
+         return """
+diff --git a/agents/orchestrator.py b/agents/orchestrator.py
+index d3370c0..71f157d 100644
+--- a/agents/orchestrator.py
++++ b/agents/orchestrator.py
+@@ -4,11 +4,13 @@ from agents.base_agent import BaseAgent
+ from agents.state import ResearchState
+ from core.config import settings
+ from core.memory import get_recent_runs
++from core.runtime import resolve_model
+ 
+ class OrchestratorAgent(BaseAgent):
+ 
+     def __init__(self):
+-        super().__init__(settings.orchestrator_model)
++        model_key, api_key = resolve_model("orchestrator_model", settings.orchestrator_model)
++        super().__init__(model_key, api_key)
+ 
+     def system_prompt(self) -> str:
+         return """You are the Orchestrator of ResearchOS, an autonomous AI research platform.
+diff --git a/agents/planner_agent.py b/agents/planner_agent.py
+index 69e15d7..d169f0d 100644
+--- a/agents/planner_agent.py
++++ b/agents/planner_agent.py
+@@ -3,11 +3,13 @@ from agents.base_agent import BaseAgent
+ from agents.state import ResearchState
+ from core.config import settings
+ from core.memory import get_recent_runs
++from core.runtime import resolve_model
+ 
+ class PlannerAgent(BaseAgent):
+ 
+     def __init__(self):
+-        super().__init__(settings.planner_model)
++        model_key, api_key = resolve_model("planner_model", settings.planner_model)
++        super().__init__(model_key, api_key)
+ 
+     def system_prompt(self) -> str:
+         return """
+diff --git a/agents/researcher.py b/agents/researcher.py
+index 3af93e0..7d1842b 100644
+--- a/agents/researcher.py
++++ b/agents/researcher.py
+@@ -8,11 +8,13 @@ from agents.state import ResearchState
+ from core.config import settings
+ from langsmith.run_helpers import traceable
+ from core.memory import get_recent_runs
++from core.runtime import resolve_model
+ 
+ class ResearcherAgent(BaseAgent):
+ 
+     def __init__(self):
+-        super().__init__(settings.researcher_model)
++        model_key, api_key = resolve_model("researcher_model", settings.researcher_model)
++        super().__init__(model_key, api_key)
+         web_search_url = os.getenv("MCP_WEB_SEARCH_URL", "http://localhost:8000/mcp")
+         arxiv_url = os.getenv("MCP_ARXIV_URL", "http://localhost:8001/mcp")
+         self.mcp_client = MultiServerMCPClient(
+diff --git a/agents/summarizer_agent.py b/agents/summarizer_agent.py
+index 2c05ca5..517e68d 100644
+--- a/agents/summarizer_agent.py
++++ b/agents/summarizer_agent.py
+@@ -3,11 +3,13 @@ from langchain_core.messages import AIMessage
+ from agents.base_agent import BaseAgent
+ from agents.state import ResearchState
+ from core.config import settings
++from core.runtime import resolve_model
+ 
+ class SummarizerAgent(BaseAgent):
+ 
+     def __init__(self):
+-        super().__init__(settings.summarizer_model)
++        model_key, api_key = resolve_model("summarizer_model", settings.summarizer_model)
++        super().__init__(model_key, api_key)
+ 
+     def system_prompt(self) -> str:
+         return """
+diff --git a/alembic.ini b/alembic.ini
+new file mode 100644
+index 0000000..e4bcd4f
+--- /dev/null
++++ b/alembic.ini
+@@ -0,0 +1,41 @@
++[alembic]
++script_location = web/alembic
++prepend_sys_path = .
++version_path_separator = os
++sqlalchemy.url =
++
++[post_write_hooks]
++
++[loggers]
++keys = root,sqlalchemy,alembic
++
++[handlers]
++keys = console
++
++[formatters]
++keys = generic
++
++[logger_root]
++level = WARNING
++handlers = console
++qualname =
++
++[logger_sqlalchemy]
++level = WARNING
++handlers =
++qualname = sqlalchemy.engine
++
++[logger_alembic]
++level = INFO
++handlers =
++qualname = alembic
++
++[handler_console]
++class = StreamHandler
++args = (sys.stderr,)
++level = NOTSET
++formatter = generic
++
++[formatter_generic]
++format = %(levelname)-5.5s [%(name)s] %(message)s
++datefmt = %H:%M:%S
+diff --git a/core/config.py b/core/config.py
+index 325b516..188a301 100644
+--- a/core/config.py
++++ b/core/config.py
+@@ -6,28 +6,71 @@ class Settings(BaseSettings):
+     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+     app_env: str = "development"
+     secret_key: str = "dev-secret-key"
++
++    # ---- platform-level provider keys -------------------------------
++    # Used as the fallback whenever a run doesn't have a per-user BYO key
++    # (see core/runtime.py). groq is the "free default" provider -- every
++    # agent role works out of the box on the platform's own Groq key even
++    # if a user never configures anything.
+     groq_api_key: str = ""
+     google_api_key: str = ""
+     mistral_api_key: str = ""
+     openrouter_api_key: str = ""
+     tavily_api_key: str = ""
++    github_token: str = ""
++
+     langchain_tracing_v2: bool = False
+     langchain_api_key: str = ""
+     langchain_project: str = "research-os"
+-    database_url: str = "sqlite+aiosqlite:///./research_os.db"
++
++    # ---- database (Postgres / Supabase) ------------------------------
++    # Supabase: Project Settings -> Database -> Connection string ->
++    # "URI" (choose the asyncpg-compatible transaction pooler on port
++    # 6543 for serverless, or the direct 5432 connection otherwise), then
++    # swap the "postgresql://" prefix for "postgresql+asyncpg://".
++    database_url: str = "postgresql+asyncpg://postgres:[YOUR-PASSWORD]@db.[PROJECT-REF].supabase.co:5432/postgres"
++    sql_echo: bool = False
++
+     redis_url: str = "redis://localhost:6379/0"
+     chroma_persist_dir: str = "./chroma_db"
+-    orchestrator_model: str = "mistral/mistral-small"
+-    researcher_model: str = "mistral/mistral-small"
+-    coder_model: str = "mistral/mistral-small"
+-    critic_model: str = "mistral/mistral-small"
+-    planner_model: str = "mistral/mistral-small"
+-    summarizer_model: str = "mistral/mistral-small"
+-    github_token: str = ""
+-    architect_model_a: str = "mistral/mistral-small"
+-    architect_model_b: str = "mistral/mistral-small"
+-    architect_judge_model: str = "mistral/mistral-small"
++
++    # ---- per-agent default models -------------------------------------
++    # Used whenever a user hasn't set a custom model for that agent role
++    # (see web/model_defaults.py + core/runtime.py). All default to Groq
++    # so a brand new, unconfigured account can still run goals immediately.
++    orchestrator_model: str = "groq/llama-3.3-70b-versatile"
++    researcher_model: str = "groq/llama-3.3-70b-versatile"
++    coder_model: str = "groq/llama-3.3-70b-versatile"
++    critic_model: str = "groq/llama-3.1-8b-instant"
++    planner_model: str = "groq/llama-3.3-70b-versatile"
++    summarizer_model: str = "groq/llama-3.1-8b-instant"
++    architect_model_a: str = "groq/llama-3.3-70b-versatile"
++    architect_model_b: str = "groq/llama-3.3-70b-versatile"
++    architect_judge_model: str = "groq/llama-3.3-70b-versatile"
++
+     output_dir: str = "./output"
++    downloads_dir: str = "./downloads"
++
++    # ---- auth -----------------------------------------------------------
++    # OAuth apps: Google Cloud Console / GitHub Developer Settings.
++    # Callback URLs to register there:
++    #   {OAUTH_REDIRECT_BASE_URL}/auth/google/callback
++    #   {OAUTH_REDIRECT_BASE_URL}/auth/github/callback
++    google_client_id: str = ""
++    google_client_secret: str = ""
++    github_client_id: str = ""
++    github_client_secret: str = ""
++    oauth_redirect_base_url: str = "http://localhost:8080"
++    # Where to send the browser after a successful OAuth login, with the
++    # issued JWT as a query param (?token=...). Leave blank while there's
++    # no frontend yet -- the callback then returns the token as JSON
++    # instead, which is convenient for testing straight from a browser.
++    frontend_url: str = ""
++    jwt_expire_minutes: int = 60 * 24 * 7
++
++    # legacy fields from the single-operator HTML prototype -- unused now
++    # that auth is per-user OAuth+JWT, kept only so old .env files don't
++    # fail validation.
+     web_username: str = ""
+     web_password_hash: str = ""
+ 
+@@ -37,4 +80,4 @@ def get_settings() -> Settings:
+     return Settings()
+ 
+ 
+-settings = get_settings()
+\ No newline at end of file
++settings = get_settings()
+diff --git a/core/memory.py b/core/memory.py
+index f635acb..7b34c93 100644
+--- a/core/memory.py
++++ b/core/memory.py
+@@ -13,9 +13,16 @@ DEFAULT_RECENT_RUNS = 3
+ 
+ def _get_database_url() -> str | None:
+     url = os.environ.get("DATABASE_URL", "")
+-    if url.startswith("postgres"):
+-        return url
+-    return None
++    if not url.startswith("postgres"):
++        return None
++    # asyncpg.connect() wants a plain postgres DSN. web/database.py (the
++    # SQLAlchemy engine used by the web API) uses the same DATABASE_URL
++    # env var but with a "+asyncpg" dialect suffix -- strip it here so
++    # both can share one env var.
++    if "+" in url.split("://", 1)[0]:
++        scheme = url.split("://", 1)[0].split("+", 1)[0]
++        url = f"{scheme}://{url.split('://', 1)[1]}"
++    return url
+ 
+ 
+ 
+diff --git a/core/runtime.py b/core/runtime.py
+new file mode 100644
+index 0000000..d4f4621
+--- /dev/null
++++ b/core/runtime.py
+@@ -0,0 +1,82 @@
++"""
++Per-run LLM configuration.
++
++Before this existed, agents read `core.config.settings` directly, which
++is a single process-wide object. That's fine for the CLI (one user, one
++process) but wrong for a multi-user API: two users' runs can be
++in-flight concurrently on the same event loop, and if resolving one
++user's model/API key ever meant mutating a shared global, one user's
++requests could pick up another user's key.
++
++Instead, each run's resolved config is stored in a contextvars.ContextVar.
++asyncio propagates context per-Task, so a run started with
++`asyncio.create_task(...)` (see web/run_manager.py) keeps its own config
++for its entire lifetime, isolated from any other concurrently-running
++task -- no shared mutable state, no locking needed.
++
++`run.py` (the CLI) never sets this, so `resolve_model()` always falls
++through to the `fallback` argument -- i.e. exactly the pre-existing
++`core.config.settings` values. Nothing about the CLI's behavior changes.
++"""
++from __future__ import annotations
++
++import contextvars
++from dataclasses import dataclass, field
++
++# Providers actually implemented in llm/router.py. Kept here too so
++# resolve_model() can decide whether a per-user key is even relevant for
++# a given model string.
++SUPPORTED_PROVIDERS = ("groq", "gemini", "mistral", "openrouter")
++
++
++@dataclass
++class RunConfig:
++    # e.g. {"orchestrator_model": "groq/llama-3.3-70b-versatile", ...}
++    models: dict[str, str] = field(default_factory=dict)
++    # e.g. {"gemini": "AIza...", "mistral": "...", "openrouter": "sk-or-..."}
++    # Deliberately keyed by provider, not stored per-agent -- one BYO key
++    # per provider covers every agent role that happens to use it.
++    keys: dict[str, str] = field(default_factory=dict)
++
++
++_current: contextvars.ContextVar[RunConfig | None] = contextvars.ContextVar(
++    "researchos_run_config", default=None
++)
++
++
++def set_run_config(config: RunConfig | None):
++    """Returns a token; pass it to reset_run_config() when the run ends."""
++    return _current.set(config)
++
++
++def reset_run_config(token) -> None:
++    _current.reset(token)
++
++
++def get_run_config() -> RunConfig | None:
++    return _current.get()
++
++
++def resolve_model(field_name: str, fallback: str) -> tuple[str, str | None]:
++    """
++    Returns (model_key, api_key).
++
++    model_key: the current run's override for `field_name` (e.g.
++    "orchestrator_model") if one was set, otherwise `fallback` (the
++    value baked into core.config.settings).
++
++    api_key: the current run's BYO key for that model's provider, if
++    any. None means "no per-user override" -- llm.router.get_llm()
++    falls back to the platform's own key from core.config.settings in
++    that case.
++    """
++    cfg = _current.get()
++    model_key = fallback
++    if cfg and cfg.models.get(field_name):
++        model_key = cfg.models[field_name]
++
++    api_key = None
++    if cfg and "/" in model_key:
++        provider = model_key.split("/", 1)[0]
++        api_key = cfg.keys.get(provider)
++    return model_key, api_key
+diff --git a/llm/router.py b/llm/router.py
+index 7d6bdc6..5b2bf6d 100644
+--- a/llm/router.py
++++ b/llm/router.py
+@@ -1,4 +1,3 @@
+-import os
+ from langchain_core.language_models import BaseChatModel
+ from langchain_mistralai import ChatMistralAI
+ from langchain_groq import ChatGroq
+@@ -7,35 +6,20 @@ from langchain_openrouter import ChatOpenRouter
+ from core.config import settings
+ 
+ 
+-def sync_provider_env() -> None:
++def get_llm(model_key: str, api_key: str | None = None) -> BaseChatModel:
+     """
+-    Push the current values of `settings` into os.environ.
+-
+-    This used to run once at import time, which meant provider API keys
+-    were frozen the moment this module was first imported. The web UI
+-    lets a user save new keys after the process has already started, so
+-    this is now called from get_llm() on every invocation to make sure
+-    each newly-constructed LLM client picks up the latest keys.
+-    """
+-    os.environ["GROQ_API_KEY"] = settings.groq_api_key
+-    os.environ["GOOGLE_API_KEY"] = settings.google_api_key
+-    os.environ["MISTRAL_API_KEY"] = settings.mistral_api_key
+-    os.environ["LANGCHAIN_TRACING_V2"] = str(settings.langchain_tracing_v2).lower()
+-    os.environ["LANGCHAIN_API_KEY"] = settings.langchain_api_key
+-    os.environ["LANGCHAIN_PROJECT"] = settings.langchain_project
+-    os.environ["OPENROUTER_API_KEY"] = settings.openrouter_api_key
+-
+-
+-# Keep the same behavior for existing callers (CLI/tests) that import this
+-# module and expect the environment to already be populated.
+-sync_provider_env()
++    Format: "provider/model-name"
+ 
++    api_key: an explicit per-call key (e.g. a decrypted BYO key resolved
++    for the current user/run via core.runtime.resolve_model()). When
++    omitted, falls back to the platform's own key for that provider from
++    core.config.settings -- this is what run.py (the CLI) always does.
+ 
+-def get_llm(model_key: str) -> BaseChatModel:
+-    """
+-    Format: "provider/model-name"
++    The key is always passed as a constructor argument, never through
++    os.environ: several requests for different users can be in flight on
++    the same process at once, and mutating a process-global env var to
++    pick a key for one of them would leak into the others.
+     """
+-    sync_provider_env()
+     provider, model_name = model_key.split("/", 1)
+ 
+     if provider == "groq":
+@@ -43,6 +27,7 @@ def get_llm(model_key: str) -> BaseChatModel:
+             model=model_name,
+             temperature=0.1,
+             max_retries=3,
++            api_key=api_key or settings.groq_api_key,
+         )
+ 
+     if provider == "gemini":
+@@ -50,6 +35,7 @@ def get_llm(model_key: str) -> BaseChatModel:
+             model=model_name,
+             temperature=0.1,
+             max_retries=3,
++            google_api_key=api_key or settings.google_api_key,
+         )
+ 
+     if provider == "mistral":
+@@ -57,16 +43,18 @@ def get_llm(model_key: str) -> BaseChatModel:
+             model=model_name,
+             temperature=0.1,
+             max_retries=3,
++            api_key=api_key or settings.mistral_api_key,
+         )
+ 
+     if provider == "openrouter":
+         return ChatOpenRouter(
+             model=model_name,
+             temperature=0.1,
+-            max_retries=3
++            max_retries=3,
++            api_key=api_key or settings.openrouter_api_key,
+         )
+ 
+     raise ValueError(
+         f"Unknown provider '{provider}'. "
+-        f"Supported: groq, gemini, mistral. Got: '{model_key}'"
++        f"Supported: groq, gemini, mistral, openrouter. Got: '{model_key}'"
+     )
+diff --git a/requirements.txt b/requirements.txt
+index 02b8b4d..c02a1d4 100644
+--- a/requirements.txt
++++ b/requirements.txt
+@@ -2,9 +2,6 @@ arxiv>=4.0.0
+ asyncpg>=0.31.0
+ fastapi>=0.138.0
+ uvicorn[standard]>=0.34.0
+-jinja2>=3.1.4
+-python-multipart>=0.0.20
+-itsdangerous>=2.2.0
+ langchain>=1.3.11
+ langchain-community>=0.4.2
+ langchain-core>=1.4.8
+@@ -22,7 +19,17 @@ langsmith>=0.9.0
+ mcp>=1.28.0
+ platformdirs>=4.10.0
+ pydantic>=2.13.4
++pydantic-settings>=2.6.0
+ pytest>=9.1.1
+ pytest-asyncio>=1.4.0
+ python-dotenv>=1.2.2
+-tavily-python>=0.7.26
+\ No newline at end of file
++tavily-python>=0.7.26
++
++# --- web API (auth, database, encryption) ---
++sqlalchemy[asyncio]>=2.0.35
++alembic>=1.13.3
++pyjwt>=2.9.0
++authlib>=1.3.2
++httpx>=0.27.2
++itsdangerous>=2.2.0
++cryptography>=42.0.0
+diff --git a/serve.py b/serve.py
+index b0bec7e..4eca312 100644
+--- a/serve.py
++++ b/serve.py
+@@ -1,21 +1,21 @@
+ """
+-Launches the ResearchOS web interface.
++Launches the ResearchOS web API.
+ 
+     python serve.py                # http://localhost:8080
+     python serve.py --port 9000
+     python serve.py --host 127.0.0.1 --reload   # local dev
+ 
+-No project scaffolding is required beforehand -- on first visit the app
+-walks you through creating the login account and configuring provider
+-API keys + which model powers each agent, then you can submit goals from
+-the browser the same way `run.py` does from the CLI.
++JSON API only -- see README.md's "Web API" section for setup (Postgres
++migration, OAuth app credentials) and endpoints. Log in via
++GET /auth/google/login or /auth/github/login, then use the returned JWT
++as an Authorization: Bearer header for everything else.
+ """
+ import argparse
+ 
+ import uvicorn
+ 
+ if __name__ == "__main__":
+-    parser = argparse.ArgumentParser(description="Run the ResearchOS web UI.")
++    parser = argparse.ArgumentParser(description="Run the ResearchOS web API.")
+     parser.add_argument("--host", default="0.0.0.0")
+     parser.add_argument("--port", type=int, default=8080)
+     parser.add_argument("--reload", action="store_true")
+diff --git a/web/alembic/env.py b/web/alembic/env.py
+new file mode 100644
+index 0000000..f8d5f81
+--- /dev/null
++++ b/web/alembic/env.py
+@@ -0,0 +1,72 @@
++import asyncio
++import os
++import sys
++from logging.config import fileConfig
++from pathlib import Path
++
++from alembic import context
++from sqlalchemy import pool
++from sqlalchemy.engine import Connection
++from sqlalchemy.ext.asyncio import async_engine_from_config
++
++# web/alembic/env.py -> parents[2] is the repo root, so `web.*` imports
++# below resolve the same way they do when the app itself runs.
++REPO_ROOT = Path(__file__).resolve().parents[2]
++sys.path.insert(0, str(REPO_ROOT))
++
++from web.database import Base  # noqa: E402
++import web.models  # noqa: E402,F401 -- registers every table on Base.metadata
++
++config = context.config
++db_url = os.environ.get("DATABASE_URL")
++if not db_url:
++    raise RuntimeError(
++        "DATABASE_URL is not set in this shell. Set it before running "
++        "alembic, e.g.:\n\n"
++        '  export DATABASE_URL="postgresql+asyncpg://postgres:[password]@db.[project-ref].supabase.co:5432/postgres"\n\n'
++        "(the same connection string used in .env -- see .env.example)"
++    )
++config.set_main_option("sqlalchemy.url", db_url)
++
++if config.config_file_name is not None:
++    fileConfig(config.config_file_name)
++
++target_metadata = Base.metadata
++
++
++def run_migrations_offline() -> None:
++    """Generate SQL scripts without a live DB connection (`alembic upgrade --sql`)."""
++    url = config.get_main_option("sqlalchemy.url")
++    context.configure(
++        url=url,
++        target_metadata=target_metadata,
++        literal_binds=True,
++        dialect_opts={"paramstyle": "named"},
++    )
++    with context.begin_transaction():
++        context.run_migrations()
++
++
++def do_run_migrations(connection: Connection) -> None:
++    context.configure(connection=connection, target_metadata=target_metadata)
++    with context.begin_transaction():
++        context.run_migrations()
++
++
++async def run_migrations_online() -> None:
++    connectable = async_engine_from_config(
++        config.get_section(config.config_ini_section, {}),
++        prefix="sqlalchemy.",
++        poolclass=pool.NullPool,
++    )
++
++    async with connectable.connect() as connection:
++        await connection.run_sync(do_run_migrations)
++
++    await connectable.dispose()
++
++
++if context.is_offline_mode():
++    run_migrations_offline()
++else:
++    asyncio.run(run_migrations_online())
+diff --git a/web/alembic/script.py.mako b/web/alembic/script.py.mako
+new file mode 100644
+index 0000000..fbc4b07
+--- /dev/null
++++ b/web/alembic/script.py.mako
+@@ -0,0 +1,26 @@
++"""${message}
++
++Revision ID: ${up_revision}
++Revises: ${down_revision | comma,n}
++Create Date: ${create_date}
++
++"""
++from typing import Sequence, Union
++
++from alembic import op
++import sqlalchemy as sa
++${imports if imports else ""}
++
++# revision identifiers, used by Alembic.
++revision: str = ${repr(up_revision)}
++down_revision: Union[str, None] = ${repr(down_revision)}
++branch_labels: Union[str, Sequence[str], None] = ${repr(branch_labels)}
++depends_on: Union[str, Sequence[str], None] = ${repr(depends_on)}
++
++
++def upgrade() -> None:
++    ${upgrades if upgrades else "pass"}
++
++
++def downgrade() -> None:
++    ${downgrades if downgrades else "pass"}
+diff --git a/web/alembic/versions/0001_initial_schema.py b/web/alembic/versions/0001_initial_schema.py
+new file mode 100644
+index 0000000..7ceeac0
+--- /dev/null
++++ b/web/alembic/versions/0001_initial_schema.py
+@@ -0,0 +1,185 @@
++"""initial schema
++
++Revision ID: 0001
++Revises: None
++Create Date: 2026-07-19
++
++"""
++from typing import Sequence, Union
++
++from alembic import op
++import sqlalchemy as sa
++from sqlalchemy.dialects import postgresql
++
++revision: str = "0001"
++down_revision: Union[str, None] = None
++branch_labels: Union[str, Sequence[str], None] = None
++depends_on: Union[str, Sequence[str], None] = None
++
++
++def upgrade() -> None:
++    # gen_random_uuid() ships in Postgres' pgcrypto extension -- server-side
++    # fallback since the app also sets UUIDs client-side via uuid.uuid4().
++    op.execute("CREATE EXTENSION IF NOT EXISTS pgcrypto")
++
++    op.create_table(
++        "users",
++        sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True,
++                   server_default=sa.text("gen_random_uuid()")),
++        sa.Column("email", sa.String(length=320), nullable=False),
++        sa.Column("name", sa.String(length=255), nullable=True),
++        sa.Column("avatar_url", sa.Text(), nullable=True),
++        sa.Column("provider", sa.String(length=32), nullable=False),
++        sa.Column("provider_id", sa.String(length=255), nullable=False),
++        sa.Column("created_at", sa.DateTime(timezone=True),
++                   server_default=sa.func.now(), nullable=False),
++    )
++    op.create_index("ix_users_email", "users", ["email"], unique=True)
++    op.create_unique_constraint(
++        "uq_users_provider_provider_id", "users", ["provider", "provider_id"]
++    )
++
++    op.create_table(
++        "threads",
++        sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True,
++                   server_default=sa.text("gen_random_uuid()")),
++        sa.Column("user_id", postgresql.UUID(as_uuid=True),
++                   sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
++        sa.Column("title", sa.String(length=255), nullable=False,
++                   server_default="New conversation"),
++        sa.Column("created_at", sa.DateTime(timezone=True),
++                   server_default=sa.func.now(), nullable=False),
++        sa.Column("updated_at", sa.DateTime(timezone=True),
++                   server_default=sa.func.now(), nullable=False),
++    )
++    op.create_index("ix_threads_user_id", "threads", ["user_id"])
++
++    op.create_table(
++        "messages",
++        sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True,
++                   server_default=sa.text("gen_random_uuid()")),
++        sa.Column("thread_id", postgresql.UUID(as_uuid=True),
++                   sa.ForeignKey("threads.id", ondelete="CASCADE"), nullable=False),
++        sa.Column("role", sa.String(length=16), nullable=False),
++        sa.Column("content", sa.Text(), nullable=False),
++        sa.Column("created_at", sa.DateTime(timezone=True),
++                   server_default=sa.func.now(), nullable=False),
++    )
++    op.create_index("ix_messages_thread_id", "messages", ["thread_id"])
++    op.create_index("ix_messages_created_at", "messages", ["created_at"])
++    op.create_check_constraint(
++        "ck_messages_role", "messages", "role IN ('user', 'assistant')"
++    )
++
++    op.create_table(
++        "runs",
++        sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True,
++                   server_default=sa.text("gen_random_uuid()")),
++        sa.Column("thread_id", postgresql.UUID(as_uuid=True),
++                   sa.ForeignKey("threads.id", ondelete="CASCADE"), nullable=False),
++        sa.Column("message_id", postgresql.UUID(as_uuid=True),
++                   sa.ForeignKey("messages.id", ondelete="SET NULL"), nullable=True),
++        sa.Column("goal", sa.Text(), nullable=False),
++        sa.Column("type", sa.String(length=16), nullable=False),
++        sa.Column("status", sa.String(length=16), nullable=False, server_default="queued"),
++        sa.Column("zip_path", sa.Text(), nullable=True),
++        sa.Column("summary", sa.Text(), nullable=True),
++        sa.Column("task_summary", postgresql.JSONB(), nullable=True),
++        sa.Column("flagged_tasks", postgresql.JSONB(), nullable=True),
++        sa.Column("error", sa.Text(), nullable=True),
++        sa.Column("created_at", sa.DateTime(timezone=True),
++                   server_default=sa.func.now(), nullable=False),
++        sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True),
++    )
++    op.create_index("ix_runs_thread_id", "runs", ["thread_id"])
++    op.create_unique_constraint("uq_runs_message_id", "runs", ["message_id"])
++    op.create_check_constraint(
++        "ck_runs_type", "runs", "type IN ('build', 'research')"
++    )
++    op.create_check_constraint(
++        "ck_runs_status", "runs", "status IN ('queued', 'running', 'done', 'error')"
++    )
++
++    op.create_table(
++        "run_events",
++        sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True,
++                   server_default=sa.text("gen_random_uuid()")),
++        sa.Column("run_id", postgresql.UUID(as_uuid=True),
++                   sa.ForeignKey("runs.id", ondelete="CASCADE"), nullable=False),
++        sa.Column("agent", sa.String(length=64), nullable=True),
++        sa.Column("content", sa.Text(), nullable=False),
++        sa.Column("event_type", sa.String(length=32), nullable=False),
++        sa.Column("created_at", sa.DateTime(timezone=True),
++                   server_default=sa.func.now(), nullable=False),
++    )
++    op.create_index("ix_run_events_run_id", "run_events", ["run_id"])
++    op.create_index("ix_run_events_created_at", "run_events", ["created_at"])
++    op.create_check_constraint(
++        "ck_run_events_type", "run_events",
++        "event_type IN ('agent_message', 'node_start', 'node_end', 'error')"
++    )
++
++    op.create_table(
++        "user_api_keys",
++        sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True,
++                   server_default=sa.text("gen_random_uuid()")),
++        sa.Column("user_id", postgresql.UUID(as_uuid=True),
++                   sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
++        sa.Column("provider", sa.String(length=32), nullable=False),
++        sa.Column("encrypted_key", sa.LargeBinary(), nullable=False),
++        sa.Column("nonce", sa.LargeBinary(), nullable=False),
++        sa.Column("label", sa.String(length=100), nullable=True),
++        sa.Column("last_used_at", sa.DateTime(timezone=True), nullable=True),
++        sa.Column("created_at", sa.DateTime(timezone=True),
++                   server_default=sa.func.now(), nullable=False),
++        sa.Column("updated_at", sa.DateTime(timezone=True),
++                   server_default=sa.func.now(), nullable=False),
++    )
++    op.create_index("ix_user_api_keys_user_id", "user_api_keys", ["user_id"])
++    op.create_unique_constraint(
++        "uq_user_api_keys_user_provider", "user_api_keys", ["user_id", "provider"]
++    )
++    # BYO providers only -- 'groq' never gets a stored user key, it always
++    # uses the platform's own server-side key (see core/config.py).
++    op.create_check_constraint(
++        "ck_user_api_keys_provider", "user_api_keys",
++        "provider IN ('openrouter', 'mistral', 'gemini')"
++    )
++
++    op.create_table(
++        "agent_model_configs",
++        sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True,
++                   server_default=sa.text("gen_random_uuid()")),
++        sa.Column("user_id", postgresql.UUID(as_uuid=True),
++                   sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
++        sa.Column("agent_role", sa.String(length=32), nullable=False),
++        sa.Column("provider", sa.String(length=32), nullable=False),
++        sa.Column("model_name", sa.String(length=255), nullable=False),
++        sa.Column("created_at", sa.DateTime(timezone=True),
++                   server_default=sa.func.now(), nullable=False),
++        sa.Column("updated_at", sa.DateTime(timezone=True),
++                   server_default=sa.func.now(), nullable=False),
++    )
++    op.create_index("ix_agent_model_configs_user_id", "agent_model_configs", ["user_id"])
++    op.create_unique_constraint(
++        "uq_agent_model_configs_user_role", "agent_model_configs", ["user_id", "agent_role"]
++    )
++    op.create_check_constraint(
++        "ck_agent_model_configs_role", "agent_model_configs",
++        "agent_role IN ('orchestrator', 'researcher', 'architect_a', 'architect_b', "
++        "'judge', 'planner', 'coder', 'critic', 'summarizer')"
++    )
++    op.create_check_constraint(
++        "ck_agent_model_configs_provider", "agent_model_configs",
++        "provider IN ('groq', 'openrouter', 'mistral', 'gemini')"
++    )
++
++
++def downgrade() -> None:
++    op.drop_table("agent_model_configs")
++    op.drop_table("user_api_keys")
++    op.drop_table("run_events")
++    op.drop_table("runs")
++    op.drop_table("messages")
++    op.drop_table("threads")
++    op.drop_table("users")
+diff --git a/web/app.py b/web/app.py
+index 95aa2b7..f195d1c 100644
+--- a/web/app.py
++++ b/web/app.py
+@@ -1,35 +1,29 @@
+ """
+-FastAPI web interface for ResearchOS.
++ResearchOS web API (FastAPI, JSON only -- no server-rendered pages).
++A frontend (React/Next.js) is expected to be built against this
++separately; see README.md's "Web API" section for the endpoint summary.
+ 
+ Run it with:  python serve.py
+ (or:          uvicorn web.app:app --host 0.0.0.0 --port 8080)
+-
+-Flow: first visit -> create the single login account -> configure API
+-keys + per-agent models -> submit goals and watch the multi-agent run
+-live, the same pipeline run.py drives from the CLI.
+ """
+ from __future__ import annotations
+ 
+-import asyncio
+-import json
+ from contextlib import asynccontextmanager
+ 
+-from fastapi import FastAPI, Form, Request
+-from fastapi.responses import RedirectResponse, StreamingResponse
+-from fastapi.staticfiles import StaticFiles
+-from fastapi.templating import Jinja2Templates
++from dotenv import load_dotenv
++
++# Populate os.environ from .env before anything else imports settings --
++# core.memory's raw asyncpg path and the MCP subprocess spawns both read
++# os.environ directly rather than through core.config.settings.
++load_dotenv()
++
++from fastapi import FastAPI
++from fastapi.middleware.cors import CORSMiddleware
+ from starlette.middleware.sessions import SessionMiddleware
+ 
+ from core.config import settings
+-from core.memory import get_recent_runs
+-from web import config_store, security
+ from web.mcp_manager import mcp_manager
+-from web.run_manager import run_manager
+-
+-TEMPLATES_DIR = __import__("pathlib").Path(__file__).parent / "templates"
+-STATIC_DIR = __import__("pathlib").Path(__file__).parent / "static"
+-
+-templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
++from web.routes import auth, runs, settings as settings_routes
+ 
+ 
+ @asynccontextmanager
+@@ -41,202 +35,27 @@ async def lifespan(app: FastAPI):
+         mcp_manager.stop_all()
+ 
+ 
+-app = FastAPI(title="ResearchOS", lifespan=lifespan)
+-app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+-app.add_middleware(SessionMiddleware, secret_key=settings.secret_key or "dev-secret-key")
+-
+-
+-def render(request: Request, template: str, **ctx):
+-    ctx.setdefault("show_nav", security.account_exists() and security.is_logged_in(request))
+-    ctx.setdefault("error", None)
+-    ctx.setdefault("notice", None)
+-    return templates.TemplateResponse(request, template, ctx)
+-
+-
+-# ---------------------------------------------------------------- account
+-
+-@app.get("/setup-account")
+-async def setup_account_form(request: Request):
+-    if security.account_exists():
+-        return RedirectResponse("/login", status_code=303)
+-    return render(request, "setup_account.html")
+-
+-
+-@app.post("/setup-account")
+-async def setup_account_submit(
+-    request: Request,
+-    username: str = Form(...),
+-    password: str = Form(...),
+-    confirm_password: str = Form(...),
+-):
+-    if security.account_exists():
+-        return RedirectResponse("/login", status_code=303)
+-
+-    username = username.strip()
+-    if not username or len(password) < 6:
+-        return render(
+-            request, "setup_account.html",
+-            error="Username required and password must be at least 6 characters.",
+-        )
+-    if password != confirm_password:
+-        return render(request, "setup_account.html", error="Passwords do not match.")
+-
+-    config_store.apply_values({
+-        "web_username": username,
+-        "web_password_hash": security.hash_password(password),
+-    })
+-    security.log_in(request)
+-    return RedirectResponse("/settings", status_code=303)
+-
+-
+-@app.get("/login")
+-async def login_form(request: Request):
+-    if not security.account_exists():
+-        return RedirectResponse("/setup-account", status_code=303)
+-    if security.is_logged_in(request):
+-        return RedirectResponse("/", status_code=303)
+-    return render(request, "login.html")
+-
+-
+-@app.post("/login")
+-async def login_submit(request: Request, username: str = Form(...), password: str = Form(...)):
+-    if (
+-        username.strip() == settings.web_username
+-        and security.verify_password(password, settings.web_password_hash)
+-    ):
+-        security.log_in(request)
+-        if not config_store.is_configured():
+-            return RedirectResponse("/settings", status_code=303)
+-        return RedirectResponse("/", status_code=303)
+-    return render(request, "login.html", error="Invalid username or password.")
+-
+-
+-@app.get("/logout")
+-async def logout(request: Request):
+-    security.log_out(request)
+-    return RedirectResponse("/login", status_code=303)
+-
+-
+-# --------------------------------------------------------------- settings
+-
+-@app.get("/settings")
+-async def settings_form(request: Request):
+-    redirect = security.guard(request)
+-    if redirect:
+-        return redirect
+-    return render(
+-        request, "settings.html",
+-        values=config_store.current_form_values(),
+-        agent_labels=config_store.AGENT_FIELD_LABELS,
+-        suggestions=config_store.MODEL_SUGGESTIONS,
+-        missing_keys=config_store.missing_provider_keys(),
+-    )
+-
+-
+-@app.post("/settings")
+-async def settings_submit(request: Request):
+-    redirect = security.guard(request)
+-    if redirect:
+-        return redirect
+-
+-    form = await request.form()
+-    fields = {**config_store.PROVIDER_KEY_FIELDS, **config_store.AGENT_MODEL_FIELDS}
+-    values = {field: (form.get(field) or "").strip() for field in fields}
+-    config_store.apply_values(values)
+-    mcp_manager.restart_web_search()
+-
+-    return render(
+-        request, "settings.html",
+-        values=config_store.current_form_values(),
+-        agent_labels=config_store.AGENT_FIELD_LABELS,
+-        suggestions=config_store.MODEL_SUGGESTIONS,
+-        missing_keys=config_store.missing_provider_keys(),
+-        notice="Configuration saved.",
+-    )
+-
+-
+-# -------------------------------------------------------------- dashboard
+-
+-@app.get("/")
+-async def dashboard(request: Request):
+-    redirect = security.guard(request)
+-    if redirect:
+-        return redirect
+-    if not config_store.is_configured():
+-        return RedirectResponse("/settings", status_code=303)
+-
+-    recent_runs = await get_recent_runs(n=20)
+-    return render(request, "dashboard.html", recent_runs=recent_runs)
+-
+-
+-@app.post("/runs")
+-async def start_run(request: Request, goal: str = Form(...), project_id: str = Form("")):
+-    redirect = security.guard(request)
+-    if redirect:
+-        return redirect
+-    if not config_store.is_configured():
+-        return RedirectResponse("/settings", status_code=303)
+-
+-    goal = goal.strip()
+-    if not goal:
+-        return RedirectResponse("/", status_code=303)
+-
+-    run_id = run_manager.start_run(goal, project_id.strip() or None)
+-    return RedirectResponse(f"/run/{run_id}", status_code=303)
+-
+-
+-@app.get("/run/{run_id}")
+-async def run_detail(request: Request, run_id: str):
+-    redirect = security.guard(request)
+-    if redirect:
+-        return redirect
+-
+-    result = run_manager.get_result(run_id)
+-    if result is not None:
+-        goal = result.get("goal", "")
+-        live = result.get("status") == "running"
+-        result_ctx = result if result.get("status") != "running" else None
+-    else:
+-        # Not an in-memory run from this process (e.g. server restarted,
+-        # or it was kicked off from the CLI) -- fall back to persisted
+-        # run memory for a static summary.
+-        past_runs = await get_recent_runs(n=200)
+-        match = next((r for r in past_runs if r["project_id"] == run_id), None)
+-        if match is None:
+-            return RedirectResponse("/", status_code=303)
+-        goal = match["goal"]
+-        live = False
+-        result_ctx = {
+-            "status": "done",
+-            "summary": match.get("summary"),
+-            "tasks_by_status": match.get("task_summary", {}),
+-            "files_written": match.get("files_written", []),
+-            "flagged": [{"title": t, "output_path": "", "feedback": ""} for t in match.get("flagged_tasks", [])],
+-            "competition": None,
+-        }
+-
+-    return render(
+-        request, "run.html",
+-        run_id=run_id, goal=goal, live=live, result=result_ctx, initial_log=[],
+-    )
++app = FastAPI(title="ResearchOS API", lifespan=lifespan)
+ 
++# Only used transiently during the OAuth login handshake (Authlib stores
++# state/nonce here) -- actual API auth is the JWT bearer token issued at
++# the end of that handshake, not this cookie. See web/routes/auth.py.
++app.add_middleware(SessionMiddleware, secret_key=settings.secret_key or "dev-secret-key")
+ 
+-@app.get("/run/{run_id}/events")
+-async def run_events(request: Request, run_id: str):
+-    redirect = security.guard(request)
+-    if redirect:
+-        return redirect
++_allow_origins = [settings.frontend_url] if settings.frontend_url else ["*"]
++app.add_middleware(
++    CORSMiddleware,
++    allow_origins=_allow_origins,
++    allow_credentials=True,
++    allow_methods=["*"],
++    allow_headers=["*"],
++)
+ 
+-    queue = run_manager.get_queue(run_id)
+-    if queue is None:
+-        return RedirectResponse(f"/run/{run_id}", status_code=303)
++app.include_router(auth.router)
++app.include_router(settings_routes.router)
++app.include_router(runs.router)
+ 
+-    async def event_stream():
+-        while True:
+-            item = await queue.get()
+-            if item is None:
+-                yield "event: end\ndata: {}\n\n"
+-                break
+-            yield f"data: {json.dumps(item)}\n\n"
+ 
+-    return StreamingResponse(event_stream(), media_type="text/event-stream")
++@app.get("/health")
++async def health():
++    return {"status": "ok"}
+diff --git a/web/config_resolution.py b/web/config_resolution.py
+new file mode 100644
+index 0000000..72ecdf1
+--- /dev/null
++++ b/web/config_resolution.py
+@@ -0,0 +1,69 @@
++"""
++Turns a user's saved AgentModelConfig + UserApiKey rows into the
++core.runtime.RunConfig that gets attached to their run's asyncio Task
++(see web/run_manager.py). This is the only place decrypted API keys
++exist outside the crypto module itself, and they never leave this
++process -- they're passed straight into an LLM client constructor.
++"""
++from __future__ import annotations
++
++from sqlalchemy import select
++from sqlalchemy.ext.asyncio import AsyncSession
++
++from core.runtime import RunConfig
++from web import crypto
++from web.model_defaults import AGENT_ROLE_SETTINGS_FIELD, DEFAULT_AGENT_MODELS
++from web.models import AgentModelConfig, User, UserApiKey
++
++
++async def build_run_config(db: AsyncSession, user: User) -> RunConfig:
++    result = await db.execute(
++        select(AgentModelConfig).where(AgentModelConfig.user_id == user.id)
++    )
++    configured = {row.agent_role: row for row in result.scalars().all()}
++
++    models: dict[str, str] = {}
++    for role, settings_field in AGENT_ROLE_SETTINGS_FIELD.items():
++        row = configured.get(role.value)
++        if row:
++            models[settings_field] = f"{row.provider}/{row.model_name}"
++        # else: leave unset -- core.runtime.resolve_model() falls back
++        # to core.config.settings' own default for that field.
++
++    result = await db.execute(
++        select(UserApiKey).where(UserApiKey.user_id == user.id)
++    )
++    keys: dict[str, str] = {}
++    for row in result.scalars().all():
++        keys[row.provider] = crypto.decrypt(row.nonce, row.encrypted_key)
++
++    return RunConfig(models=models, keys=keys)
++
++
++async def account_status(db: AsyncSession, user: User) -> tuple[list[str], list[str], bool]:
++    """Returns (configured_providers, missing_providers, using_defaults)."""
++    result = await db.execute(select(UserApiKey.provider).where(UserApiKey.user_id == user.id))
++    configured_providers = sorted({row for row in result.scalars().all()})
++
++    result = await db.execute(select(AgentModelConfig).where(AgentModelConfig.user_id == user.id))
++    agent_configs = result.scalars().all()
++    using_defaults = len(agent_configs) == 0
++
++    referenced_providers = {row.provider for row in agent_configs if row.provider != "groq"}
++    missing_providers = sorted(referenced_providers - set(configured_providers))
++
++    return configured_providers, missing_providers, using_defaults
++
++
++def default_agent_models_view() -> list[dict]:
++    """Used by GET /api/settings/agent-models to show defaults alongside overrides."""
++    out = []
++    for role, model_key in DEFAULT_AGENT_MODELS.items():
++        provider, model_name = model_key.split("/", 1)
++        out.append({
++            "agent_role": role.value,
++            "provider": provider,
++            "model_name": model_name,
++            "is_default": True,
++        })
++    return out
+diff --git a/web/config_store.py b/web/config_store.py
+deleted file mode 100644
+index 1f06315..0000000
+--- a/web/config_store.py
++++ /dev/null
+@@ -1,158 +0,0 @@
+-"""
+-Persists web-UI-submitted configuration (provider API keys + per-agent
+-model choices + the web login account) into the project's .env file, and
+-keeps the in-memory `settings` singleton (and os.environ) in sync so the
+-change is picked up by the very next agent run -- no process restart
+-required.
+-"""
+-from __future__ import annotations
+-
+-import os
+-from pathlib import Path
+-
+-from dotenv import set_key
+-
+-from core.config import settings
+-
+-REPO_ROOT = Path(__file__).resolve().parent.parent
+-ENV_PATH = REPO_ROOT / ".env"
+-
+-# settings-attribute -> ENV var name
+-PROVIDER_KEY_FIELDS: dict[str, str] = {
+-    "tavily_api_key": "TAVILY_API_KEY",
+-    "github_token": "GITHUB_TOKEN",
+-    "groq_api_key": "GROQ_API_KEY",
+-    "google_api_key": "GOOGLE_API_KEY",
+-    "mistral_api_key": "MISTRAL_API_KEY",
+-    "openrouter_api_key": "OPENROUTER_API_KEY",
+-    "langchain_api_key": "LANGCHAIN_API_KEY",
+-}
+-
+-AGENT_MODEL_FIELDS: dict[str, str] = {
+-    "orchestrator_model": "ORCHESTRATOR_MODEL",
+-    "researcher_model": "RESEARCHER_MODEL",
+-    "architect_model_a": "ARCHITECT_MODEL_A",
+-    "architect_model_b": "ARCHITECT_MODEL_B",
+-    "architect_judge_model": "ARCHITECT_JUDGE_MODEL",
+-    "coder_model": "CODER_MODEL",
+-    "critic_model": "CRITIC_MODEL",
+-    "planner_model": "PLANNER_MODEL",
+-    "summarizer_model": "SUMMARIZER_MODEL",
+-}
+-
+-# Friendly label + which settings field holds the API key each provider
+-# prefix needs. Used both to render the settings form and to validate it.
+-PROVIDERS = {
+-    "groq": {"label": "Groq", "key_field": "groq_api_key"},
+-    "gemini": {"label": "Google Gemini", "key_field": "google_api_key"},
+-    "mistral": {"label": "Mistral", "key_field": "mistral_api_key"},
+-    "openrouter": {"label": "OpenRouter", "key_field": "openrouter_api_key"},
+-}
+-
+-# Suggested model strings per provider, shown as <datalist> options. The
+-# form also accepts any free-text "provider/model-name" string, so this
+-# list is a convenience, not a hard restriction.
+-MODEL_SUGGESTIONS = {
+-    "groq": [
+-        "groq/llama-3.3-70b-versatile",
+-        "groq/llama-3.1-8b-instant",
+-        "groq/moonshotai/kimi-k2-instruct",
+-    ],
+-    "gemini": [
+-        "gemini/gemini-2.5-pro",
+-        "gemini/gemini-2.5-flash",
+-        "gemini/gemini-1.5-pro",
+-    ],
+-    "mistral": [
+-        "mistral/mistral-large-latest",
+-        "mistral/mistral-small-latest",
+-        "mistral/codestral-latest",
+-    ],
+-    "openrouter": [
+-        "openrouter/deepseek/deepseek-chat",
+-        "openrouter/qwen/qwen-2.5-coder-32b-instruct",
+-        "openrouter/nvidia/llama-3.1-nemotron-70b-instruct",
+-    ],
+-}
+-
+-AGENT_FIELD_LABELS = {
+-    "orchestrator_model": "Orchestrator",
+-    "researcher_model": "Researcher",
+-    "architect_model_a": "Architect - Proposal A",
+-    "architect_model_b": "Architect - Proposal B",
+-    "architect_judge_model": "Architect - Judge",
+-    "coder_model": "Coder",
+-    "critic_model": "Critic",
+-    "planner_model": "Planner",
+-    "summarizer_model": "Summarizer",
+-}
+-
+-
+-def _ensure_env_file() -> None:
+-    if not ENV_PATH.exists():
+-        ENV_PATH.touch()
+-
+-
+-def apply_values(values: dict[str, str]) -> None:
+-    """
+-    Write the given {settings_field: value} pairs to .env, and update the
+-    live `settings` object + os.environ so the change is active immediately.
+-    """
+-    _ensure_env_file()
+-    all_fields = {**PROVIDER_KEY_FIELDS, **AGENT_MODEL_FIELDS,
+-                  "web_username": "WEB_USERNAME",
+-                  "web_password_hash": "WEB_PASSWORD_HASH"}
+-
+-    for field, value in values.items():
+-        if field not in all_fields:
+-            continue
+-        env_name = all_fields[field]
+-        set_key(str(ENV_PATH), env_name, value or "")
+-        setattr(settings, field, value or "")
+-        os.environ[env_name] = value or ""
+-
+-
+-def model_provider(model_key: str) -> str | None:
+-    if "/" not in model_key:
+-        return None
+-    return model_key.split("/", 1)[0]
+-
+-
+-def missing_provider_keys() -> list[str]:
+-    """
+-    Returns the friendly provider labels that are referenced by at least
+-    one currently-configured agent model but have no API key saved yet.
+-    """
+-    used_providers = set()
+-    for field in AGENT_MODEL_FIELDS:
+-        provider = model_provider(getattr(settings, field, ""))
+-        if provider:
+-            used_providers.add(provider)
+-
+-    missing = []
+-    for provider in used_providers:
+-        meta = PROVIDERS.get(provider)
+-        if not meta:
+-            continue
+-        if not getattr(settings, meta["key_field"], ""):
+-            missing.append(meta["label"])
+-    return missing
+-
+-
+-def is_configured() -> bool:
+-    """
+-    True once the operator has saved at least Tavily (required for web
+-    search) and every referenced model provider has a key on file.
+-    """
+-    if not settings.tavily_api_key:
+-        return False
+-    if missing_provider_keys():
+-        return False
+-    return True
+-
+-
+-def current_form_values() -> dict[str, str]:
+-    values: dict[str, str] = {}
+-    for field in {**PROVIDER_KEY_FIELDS, **AGENT_MODEL_FIELDS}:
+-        values[field] = getattr(settings, field, "")
+-    return values
+diff --git a/web/crypto.py b/web/crypto.py
+new file mode 100644
+index 0000000..553f9be
+--- /dev/null
++++ b/web/crypto.py
+@@ -0,0 +1,39 @@
++"""
++Encrypts/decrypts user-supplied LLM provider API keys before they touch
++the database, using AES-256-GCM. Key material is derived from
++SECRET_KEY, so no separate secret needs managing -- but that also means
++SECRET_KEY must be kept safe and never change in place: rotating it
++makes every previously-stored key undecryptable. If you ever need to
++rotate SECRET_KEY, decrypt all UserApiKey rows with the old value first,
++then re-encrypt and save with the new one.
++"""
++from __future__ import annotations
++
++import hashlib
++import os
++
++from cryptography.hazmat.primitives.ciphers.aead import AESGCM
++
++from core.config import settings
++
++_NONCE_BYTES = 12
++
++
++def _derive_key() -> bytes:
++    # SHA-256 -> 32 bytes, exactly what AES-256 needs. This is a
++    # deterministic KDF (no salt) because we need to re-derive the same
++    # key on every decrypt without storing it anywhere.
++    return hashlib.sha256(settings.secret_key.encode("utf-8")).digest()
++
++
++def encrypt(plaintext: str) -> tuple[bytes, bytes]:
++    """Returns (nonce, ciphertext). Both are safe to store; neither is secret on its own."""
++    aesgcm = AESGCM(_derive_key())
++    nonce = os.urandom(_NONCE_BYTES)
++    ciphertext = aesgcm.encrypt(nonce, plaintext.encode("utf-8"), None)
++    return nonce, ciphertext
++
++
++def decrypt(nonce: bytes, ciphertext: bytes) -> str:
++    aesgcm = AESGCM(_derive_key())
++    return aesgcm.decrypt(nonce, ciphertext, None).decode("utf-8")
+diff --git a/web/database.py b/web/database.py
+new file mode 100644
+index 0000000..09e03b0
+--- /dev/null
++++ b/web/database.py
+@@ -0,0 +1,62 @@
++"""
++Async SQLAlchemy engine + session factory, pointed at Postgres
++(Supabase in production; any Postgres works for local dev).
++
++Table creation is handled by Alembic (see web/alembic/) -- `init_db()`
++below is a dev-only convenience for spinning up a scratch database
++without running migrations, not something production startup should call.
++"""
++from __future__ import annotations
++
++from typing import AsyncGenerator
++
++from sqlalchemy.ext.asyncio import (
++    AsyncSession,
++    async_sessionmaker,
++    create_async_engine,
++)
++from sqlalchemy.orm import DeclarativeBase
++
++from core.config import settings
++
++engine = create_async_engine(
++    settings.database_url,
++    echo=settings.sql_echo,
++    pool_pre_ping=True,
++    pool_size=10,
++    max_overflow=20,
++)
++
++AsyncSessionLocal = async_sessionmaker(
++    bind=engine,
++    class_=AsyncSession,
++    expire_on_commit=False,
++    autoflush=False,
++)
++
++
++class Base(DeclarativeBase):
++    pass
++
++
++async def get_db() -> AsyncGenerator[AsyncSession, None]:
++    """FastAPI dependency -- yields a session and guarantees cleanup."""
++    async with AsyncSessionLocal() as session:
++        try:
++            yield session
++        except Exception:
++            await session.rollback()
++            raise
++        finally:
++            await session.close()
++
++
++async def init_db() -> None:
++    """
++    Dev convenience only -- creates tables directly from models.py.
++    Everywhere else, use Alembic migrations instead:
++
++        cd web && alembic upgrade head
++    """
++    async with engine.begin() as conn:
++        await conn.run_sync(Base.metadata.create_all)
+diff --git a/web/model_defaults.py b/web/model_defaults.py
+new file mode 100644
+index 0000000..1a8fef1
+--- /dev/null
++++ b/web/model_defaults.py
+@@ -0,0 +1,42 @@
++"""
++Default model per agent role -- what a brand new, unconfigured account
++runs on. All default to Groq (the platform-default provider, billed to
++the app's own key) so a user can submit a goal immediately after
++logging in, with zero setup. They can override any of these from
++/api/settings/agent-models once they've optionally added their own
++BYO provider keys.
++
++Kept in sync with core.config.Settings' own per-field defaults --
++those are what run.py (the CLI) uses, these are what a fresh web
++account uses. They intentionally match.
++"""
++from __future__ import annotations
++
++from web.models import AgentRole
++
++# role -> "provider/model-name"
++DEFAULT_AGENT_MODELS: dict[AgentRole, str] = {
++    AgentRole.orchestrator: "groq/llama-3.3-70b-versatile",
++    AgentRole.researcher: "groq/llama-3.3-70b-versatile",
++    AgentRole.architect_a: "groq/llama-3.3-70b-versatile",
++    AgentRole.architect_b: "groq/llama-3.3-70b-versatile",
++    AgentRole.judge: "groq/llama-3.3-70b-versatile",
++    AgentRole.planner: "groq/llama-3.3-70b-versatile",
++    AgentRole.coder: "groq/llama-3.3-70b-versatile",
++    AgentRole.critic: "groq/llama-3.1-8b-instant",
++    AgentRole.summarizer: "groq/llama-3.1-8b-instant",
++}
++
++# AgentRole -> the core.config.Settings field name each one maps to when
++# building a run's model overrides (see web/config_resolution.py).
++AGENT_ROLE_SETTINGS_FIELD: dict[AgentRole, str] = {
++    AgentRole.orchestrator: "orchestrator_model",
++    AgentRole.researcher: "researcher_model",
++    AgentRole.architect_a: "architect_model_a",
++    AgentRole.architect_b: "architect_model_b",
++    AgentRole.judge: "architect_judge_model",
++    AgentRole.planner: "planner_model",
++    AgentRole.coder: "coder_model",
++    AgentRole.critic: "critic_model",
++    AgentRole.summarizer: "summarizer_model",
++}
+diff --git a/web/models.py b/web/models.py
+new file mode 100644
+index 0000000..945c442
+--- /dev/null
++++ b/web/models.py
+@@ -0,0 +1,268 @@
++"""
++Database schema.
++
++Adapted from the design on the `web/backend/database_models` branch,
++reconciled with what's actually wired up elsewhere in this codebase:
++
++- AgentRole now has one entry per field in core.config.Settings that
++  actually drives an agent (including architect_a/architect_b/judge and
++  summarizer, which the original draft was missing/misnamed).
++- LLMProvider is limited to the four providers llm/router.py actually
++  implements (groq, gemini, mistral, openrouter). The draft's
++  'anthropic' and 'llama' aren't wired to anything in this repo, so
++  they're left out rather than shipping selectable options that would
++  fail at run time.
++- 'groq' is the platform-default provider (the app's own server-side
++  key, from core.config.settings.groq_api_key) and is deliberately NOT
++  a valid value in UserApiKey.provider -- there's nothing for a user to
++  bring for it. gemini/mistral/openrouter are BYO-only: a run falls
++  back to the platform default for a role if the user picked one of
++  these providers but hasn't saved a key for it (see
++  web/config_resolution.py).
++"""
++from __future__ import annotations
++
++import enum
++import uuid
++from datetime import datetime
++from typing import Optional
++
++from sqlalchemy import (
++    JSON,
++    DateTime,
++    ForeignKey,
++    LargeBinary,
++    String,
++    Text,
++    UniqueConstraint,
++    func,
++)
++from sqlalchemy.dialects.postgresql import JSONB, UUID
++from sqlalchemy.orm import Mapped, mapped_column, relationship
++
++from web.database import Base
++
++
++class OAuthProvider(str, enum.Enum):
++    google = "google"
++    github = "github"
++
++
++class MessageRole(str, enum.Enum):
++    user = "user"
++    assistant = "assistant"
++
++
++class RunType(str, enum.Enum):
++    build = "build"
++    research = "research"
++
++
++class RunStatus(str, enum.Enum):
++    queued = "queued"
++    running = "running"
++    done = "done"
++    error = "error"
++
++
++class RunEventType(str, enum.Enum):
++    agent_message = "agent_message"
++    node_start = "node_start"
++    node_end = "node_end"
++    error = "error"
++
++
++class LLMProvider(str, enum.Enum):
++    """BYO providers a user can store a key for. See module docstring."""
++    openrouter = "openrouter"
++    mistral = "mistral"
++    gemini = "gemini"
++
++
++class AgentRole(str, enum.Enum):
++    """Pipeline roles a user can assign a specific provider/model to."""
++    orchestrator = "orchestrator"
++    researcher = "researcher"
++    architect_a = "architect_a"
++    architect_b = "architect_b"
++    judge = "judge"
++    planner = "planner"
++    coder = "coder"
++    critic = "critic"
++    summarizer = "summarizer"
++
++
++def _uuid_pk() -> Mapped[uuid.UUID]:
++    return mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
++
++
++class User(Base):
++    __tablename__ = "users"
++
++    id: Mapped[uuid.UUID] = _uuid_pk()
++    email: Mapped[str] = mapped_column(String(320), unique=True, index=True, nullable=False)
++    name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
++    avatar_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
++    provider: Mapped[str] = mapped_column(String(32), nullable=False)       # OAuthProvider
++    provider_id: Mapped[str] = mapped_column(String(255), nullable=False)   # OAuth subject/sub
++    created_at: Mapped[datetime] = mapped_column(
++        DateTime(timezone=True), server_default=func.now(), nullable=False
++    )
++
++    threads: Mapped[list["Thread"]] = relationship(
++        back_populates="user", cascade="all, delete-orphan"
++    )
++    api_keys: Mapped[list["UserApiKey"]] = relationship(
++        back_populates="user", cascade="all, delete-orphan"
++    )
++    agent_model_configs: Mapped[list["AgentModelConfig"]] = relationship(
++        back_populates="user", cascade="all, delete-orphan"
++    )
++
++    __table_args__ = (
++        UniqueConstraint("provider", "provider_id", name="uq_users_provider_provider_id"),
++    )
++
++
++class Thread(Base):
++    __tablename__ = "threads"
++
++    id: Mapped[uuid.UUID] = _uuid_pk()
++    user_id: Mapped[uuid.UUID] = mapped_column(
++        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
++    )
++    title: Mapped[str] = mapped_column(String(255), nullable=False, default="New conversation")
++    created_at: Mapped[datetime] = mapped_column(
++        DateTime(timezone=True), server_default=func.now(), nullable=False
++    )
++    updated_at: Mapped[datetime] = mapped_column(
++        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
++    )
++
++    user: Mapped["User"] = relationship(back_populates="threads")
++    messages: Mapped[list["Message"]] = relationship(
++        back_populates="thread", cascade="all, delete-orphan", order_by="Message.created_at"
++    )
++    runs: Mapped[list["Run"]] = relationship(
++        back_populates="thread", cascade="all, delete-orphan"
++    )
++
++
++class Message(Base):
++    __tablename__ = "messages"
++
++    id: Mapped[uuid.UUID] = _uuid_pk()
++    thread_id: Mapped[uuid.UUID] = mapped_column(
++        UUID(as_uuid=True), ForeignKey("threads.id", ondelete="CASCADE"), nullable=False, index=True
++    )
++    role: Mapped[str] = mapped_column(String(16), nullable=False)  # MessageRole
++    content: Mapped[str] = mapped_column(Text, nullable=False)
++    created_at: Mapped[datetime] = mapped_column(
++        DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
++    )
++
++    thread: Mapped["Thread"] = relationship(back_populates="messages")
++    run: Mapped[Optional["Run"]] = relationship(
++        back_populates="message", uselist=False, foreign_keys="Run.message_id"
++    )
++
++
++class Run(Base):
++    __tablename__ = "runs"
++
++    id: Mapped[uuid.UUID] = _uuid_pk()
++    thread_id: Mapped[uuid.UUID] = mapped_column(
++        UUID(as_uuid=True), ForeignKey("threads.id", ondelete="CASCADE"), nullable=False, index=True
++    )
++    message_id: Mapped[Optional[uuid.UUID]] = mapped_column(
++        UUID(as_uuid=True), ForeignKey("messages.id", ondelete="SET NULL"), nullable=True, unique=True
++    )
++    goal: Mapped[str] = mapped_column(Text, nullable=False)
++    type: Mapped[str] = mapped_column(String(16), nullable=False)          # RunType
++    status: Mapped[str] = mapped_column(String(16), nullable=False, default=RunStatus.queued.value)
++    zip_path: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
++    summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
++    task_summary: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
++    flagged_tasks: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
++    error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
++    created_at: Mapped[datetime] = mapped_column(
++        DateTime(timezone=True), server_default=func.now(), nullable=False
++    )
++    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
++
++    thread: Mapped["Thread"] = relationship(back_populates="runs")
++    message: Mapped[Optional["Message"]] = relationship(
++        back_populates="run", foreign_keys=[message_id]
++    )
++    events: Mapped[list["RunEvent"]] = relationship(
++        back_populates="run", cascade="all, delete-orphan", order_by="RunEvent.created_at"
++    )
++
++
++class RunEvent(Base):
++    __tablename__ = "run_events"
++
++    id: Mapped[uuid.UUID] = _uuid_pk()
++    run_id: Mapped[uuid.UUID] = mapped_column(
++        UUID(as_uuid=True), ForeignKey("runs.id", ondelete="CASCADE"), nullable=False, index=True
++    )
++    agent: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
++    content: Mapped[str] = mapped_column(Text, nullable=False)
++    event_type: Mapped[str] = mapped_column(String(32), nullable=False)  # RunEventType
++    created_at: Mapped[datetime] = mapped_column(
++        DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
++    )
++
++    run: Mapped["Run"] = relationship(back_populates="events")
++
++
++class UserApiKey(Base):
++    __tablename__ = "user_api_keys"
++    __table_args__ = (
++        UniqueConstraint("user_id", "provider", name="uq_user_api_keys_user_provider"),
++    )
++
++    id: Mapped[uuid.UUID] = _uuid_pk()
++    user_id: Mapped[uuid.UUID] = mapped_column(
++        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
++    )
++    provider: Mapped[str] = mapped_column(String(32), nullable=False)
++
++    # AES-256-GCM ciphertext + its nonce (see web/crypto.py). The raw key
++    # is never stored, logged, or returned by any API response.
++    encrypted_key: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
++    nonce: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
++
++    label: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
++    last_used_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
++    created_at: Mapped[datetime] = mapped_column(
++        DateTime(timezone=True), server_default=func.now(), nullable=False
++    )
++    updated_at: Mapped[datetime] = mapped_column(
++        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
++    )
++
++    user: Mapped["User"] = relationship(back_populates="api_keys")
++
++
++class AgentModelConfig(Base):
++    __tablename__ = "agent_model_configs"
++    __table_args__ = (
++        UniqueConstraint("user_id", "agent_role", name="uq_agent_model_configs_user_role"),
++    )
++
++    id: Mapped[uuid.UUID] = _uuid_pk()
++    user_id: Mapped[uuid.UUID] = mapped_column(
++        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
++    )
++    agent_role: Mapped[str] = mapped_column(String(32), nullable=False)   # AgentRole
++    provider: Mapped[str] = mapped_column(String(32), nullable=False)     # "groq" or an LLMProvider
++    model_name: Mapped[str] = mapped_column(String(255), nullable=False)  # e.g. "llama-3.3-70b-versatile"
++    created_at: Mapped[datetime] = mapped_column(
++        DateTime(timezone=True), server_default=func.now(), nullable=False
++    )
++    updated_at: Mapped[datetime] = mapped_column(
++        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
++    )
++
++    user: Mapped["User"] = relationship(back_populates="agent_model_configs")
+diff --git a/web/oauth.py b/web/oauth.py
+new file mode 100644
+index 0000000..65f555f
+--- /dev/null
++++ b/web/oauth.py
+@@ -0,0 +1,32 @@
++"""
++OAuth client registration (Google + GitHub) via Authlib. Actual
++login/callback endpoints live in web/routes/auth.py -- this module just
++sets up the two clients so they can be reused there.
++"""
++from __future__ import annotations
++
++from authlib.integrations.starlette_client import OAuth
++
++from core.config import settings
++
++oauth = OAuth()
++
++oauth.register(
++    name="google",
++    client_id=settings.google_client_id,
++    client_secret=settings.google_client_secret,
++    server_metadata_url="https://accounts.google.com/.well-known/openid-configuration",
++    client_kwargs={"scope": "openid email profile"},
++)
++
++oauth.register(
++    name="github",
++    client_id=settings.github_client_id,
++    client_secret=settings.github_client_secret,
++    access_token_url="https://github.com/login/oauth/access_token",
++    authorize_url="https://github.com/login/oauth/authorize",
++    api_base_url="https://api.github.com/",
++    client_kwargs={"scope": "read:user user:email"},
++)
++
++SUPPORTED_OAUTH_PROVIDERS = ("google", "github")
+diff --git a/web/routes/__init__.py b/web/routes/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/web/routes/auth.py b/web/routes/auth.py
+new file mode 100644
+index 0000000..ba22873
+--- /dev/null
++++ b/web/routes/auth.py
+@@ -0,0 +1,112 @@
++from __future__ import annotations
++
++from fastapi import APIRouter, Depends, HTTPException, Request
++from fastapi.responses import RedirectResponse
++from sqlalchemy import select
++from sqlalchemy.ext.asyncio import AsyncSession
++
++from core.config import settings
++from web.database import get_db
++from web.models import User
++from web.oauth import SUPPORTED_OAUTH_PROVIDERS, oauth
++from web.schemas import TokenResponse, UserOut
++from web.security import create_access_token, get_current_user
++
++router = APIRouter(prefix="/auth", tags=["auth"])
++
++
++@router.get("/{provider}/login")
++async def oauth_login(provider: str, request: Request):
++    if provider not in SUPPORTED_OAUTH_PROVIDERS:
++        raise HTTPException(404, f"Unknown provider '{provider}'. Supported: {SUPPORTED_OAUTH_PROVIDERS}")
++    client = oauth.create_client(provider)
++    redirect_uri = f"{settings.oauth_redirect_base_url}/auth/{provider}/callback"
++    return await client.authorize_redirect(request, redirect_uri)
++
++
++async def _google_profile(client, token) -> dict:
++    userinfo = token.get("userinfo")
++    if not userinfo:
++        userinfo = await client.userinfo(token=token)
++    return {
++        "email": userinfo["email"],
++        "name": userinfo.get("name"),
++        "avatar_url": userinfo.get("picture"),
++        "provider_id": userinfo["sub"],
++    }
++
++
++async def _github_profile(client, token) -> dict:
++    profile_resp = await client.get("user", token=token)
++    profile = profile_resp.json()
++
++    email = profile.get("email")
++    if not email:
++        emails_resp = await client.get("user/emails", token=token)
++        emails = emails_resp.json()
++        primary = next((e["email"] for e in emails if e.get("primary")), None)
++        email = primary or (emails[0]["email"] if emails else None)
++
++    if not email:
++        raise HTTPException(400, "GitHub account has no accessible email address")
++
++    return {
++        "email": email,
++        "name": profile.get("name") or profile.get("login"),
++        "avatar_url": profile.get("avatar_url"),
++        "provider_id": str(profile["id"]),
++    }
++
++
++@router.get("/{provider}/callback")
++async def oauth_callback(provider: str, request: Request, db: AsyncSession = Depends(get_db)):
++    if provider not in SUPPORTED_OAUTH_PROVIDERS:
++        raise HTTPException(404, f"Unknown provider '{provider}'")
++
++    client = oauth.create_client(provider)
++    token = await client.authorize_access_token(request)
++
++    if provider == "google":
++        profile = await _google_profile(client, token)
++    else:
++        profile = await _github_profile(client, token)
++
++    result = await db.execute(
++        select(User).where(User.provider == provider, User.provider_id == profile["provider_id"])
++    )
++    user = result.scalar_one_or_none()
++
++    if user is None:
++        user = User(
++            email=profile["email"],
++            name=profile["name"],
++            avatar_url=profile["avatar_url"],
++            provider=provider,
++            provider_id=profile["provider_id"],
++        )
++        db.add(user)
++    else:
++        user.email = profile["email"]
++        user.name = profile["name"]
++        user.avatar_url = profile["avatar_url"]
++
++    await db.commit()
++    await db.refresh(user)
++
++    access_token = create_access_token(user.id)
++
++    if settings.frontend_url:
++        return RedirectResponse(f"{settings.frontend_url}?token={access_token}")
++
++    # No frontend configured yet -- hand the token back directly so the
++    # API is fully usable (e.g. via Swagger's "Authorize" button or curl)
++    # without one.
++    return TokenResponse(
++        access_token=access_token,
++        user=UserOut.model_validate(user),
++    )
++
++
++@router.get("/me", response_model=UserOut)
++async def read_me(current_user: User = Depends(get_current_user)):
++    return current_user
+diff --git a/web/routes/runs.py b/web/routes/runs.py
+new file mode 100644
+index 0000000..72f5438
+--- /dev/null
++++ b/web/routes/runs.py
+@@ -0,0 +1,144 @@
++from __future__ import annotations
++
++import json
++import uuid
++
++from fastapi import APIRouter, Depends, HTTPException
++from fastapi.responses import FileResponse, StreamingResponse
++from sqlalchemy import select
++from sqlalchemy.ext.asyncio import AsyncSession
++
++from web.database import get_db
++from web.models import Run, RunEvent, Thread, User
++from web.run_manager import run_manager
++from web.schemas import RunCreate, RunEventOut, RunOut
++from web.security import get_current_user
++
++router = APIRouter(prefix="/api/runs", tags=["runs"])
++
++
++def _to_run_out(run: Run) -> RunOut:
++    return RunOut(
++        id=run.id, thread_id=run.thread_id, goal=run.goal, type=run.type,
++        status=run.status, summary=run.summary, task_summary=run.task_summary,
++        flagged_tasks=run.flagged_tasks, error=run.error,
++        has_download=bool(run.zip_path), created_at=run.created_at,
++        completed_at=run.completed_at,
++    )
++
++
++async def _get_owned_run(run_id: uuid.UUID, user: User, db: AsyncSession) -> Run:
++    result = await db.execute(
++        select(Run).join(Thread).where(Run.id == run_id, Thread.user_id == user.id)
++    )
++    run = result.scalar_one_or_none()
++    if run is None:
++        raise HTTPException(404, "Run not found")
++    return run
++
++
++@router.post("", response_model=RunOut, status_code=201)
++async def create_run(
++    body: RunCreate,
++    current_user: User = Depends(get_current_user),
++    db: AsyncSession = Depends(get_db),
++):
++    try:
++        run = await run_manager.start_run(current_user, body.goal, body.thread_id)
++    except ValueError as exc:
++        raise HTTPException(404, str(exc))
++    return _to_run_out(run)
++
++
++@router.get("", response_model=list[RunOut])
++async def list_runs(
++    thread_id: uuid.UUID | None = None,
++    limit: int = 20,
++    current_user: User = Depends(get_current_user),
++    db: AsyncSession = Depends(get_db),
++):
++    query = select(Run).join(Thread).where(Thread.user_id == current_user.id)
++    if thread_id is not None:
++        query = query.where(Run.thread_id == thread_id)
++    query = query.order_by(Run.created_at.desc()).limit(min(limit, 100))
++    result = await db.execute(query)
++    return [_to_run_out(r) for r in result.scalars().all()]
++
++
++@router.get("/{run_id}", response_model=RunOut)
++async def get_run(
++    run_id: uuid.UUID,
++    current_user: User = Depends(get_current_user),
++    db: AsyncSession = Depends(get_db),
++):
++    run = await _get_owned_run(run_id, current_user, db)
++    return _to_run_out(run)
++
++
++@router.get("/{run_id}/events", response_model=list[RunEventOut])
++async def get_run_events(
++    run_id: uuid.UUID,
++    current_user: User = Depends(get_current_user),
++    db: AsyncSession = Depends(get_db),
++):
++    """Persisted event history. For a run still in progress, use the /stream endpoint instead."""
++    await _get_owned_run(run_id, current_user, db)
++    result = await db.execute(
++        select(RunEvent).where(RunEvent.run_id == run_id).order_by(RunEvent.created_at)
++    )
++    return [
++        RunEventOut(agent=e.agent, content=e.content, event_type=e.event_type, created_at=e.created_at)
++        for e in result.scalars().all()
++    ]
++
++
++@router.get("/{run_id}/stream")
++async def stream_run(
++    run_id: uuid.UUID,
++    current_user: User = Depends(get_current_user),
++    db: AsyncSession = Depends(get_db),
++):
++    """
++    Server-Sent Events. If the run is still executing, streams new
++    events live. If it already finished (or this process restarted and
++    lost the in-memory queue), replays the persisted history once and
++    closes -- either way the client gets the full event log.
++    """
++    run = await _get_owned_run(run_id, current_user, db)
++    queue = run_manager.get_queue(str(run_id))
++
++    async def event_stream():
++        if queue is None:
++            result = await db.execute(
++                select(RunEvent).where(RunEvent.run_id == run_id).order_by(RunEvent.created_at)
++            )
++            for e in result.scalars().all():
++                yield f"data: {json.dumps({'type': 'log', 'agent': e.agent, 'text': e.content})}\n\n"
++            yield f"data: {json.dumps({'type': 'done' if run.status == 'done' else 'error', 'run_id': str(run_id)})}\n\n"
++            yield "event: end\ndata: {}\n\n"
++            return
++
++        while True:
++            item = await queue.get()
++            if item is None:
++                yield "event: end\ndata: {}\n\n"
++                break
++            yield f"data: {json.dumps(item)}\n\n"
++
++    return StreamingResponse(event_stream(), media_type="text/event-stream")
++
++
++@router.get("/{run_id}/download")
++async def download_run(
++    run_id: uuid.UUID,
++    current_user: User = Depends(get_current_user),
++    db: AsyncSession = Depends(get_db),
++):
++    run = await _get_owned_run(run_id, current_user, db)
++    if not run.zip_path:
++        raise HTTPException(404, "This run has no downloadable files (research-only runs produce none).")
++    return FileResponse(
++        run.zip_path,
++        media_type="application/zip",
++        filename=f"researchos-{run_id}.zip",
++    )
+diff --git a/web/routes/settings.py b/web/routes/settings.py
+new file mode 100644
+index 0000000..9d2ea52
+--- /dev/null
++++ b/web/routes/settings.py
+@@ -0,0 +1,190 @@
++from __future__ import annotations
++
++from fastapi import APIRouter, Depends, HTTPException
++from sqlalchemy import select
++from sqlalchemy.ext.asyncio import AsyncSession
++
++from core.runtime import SUPPORTED_PROVIDERS
++from web import config_resolution, crypto
++from web.database import get_db
++from web.model_defaults import DEFAULT_AGENT_MODELS
++from web.models import AgentModelConfig, AgentRole, LLMProvider, User, UserApiKey
++from web.schemas import (
++    AccountStatus,
++    AgentModelOut,
++    AgentModelsIn,
++    ApiKeyIn,
++    ApiKeyOut,
++)
++from web.security import get_current_user
++
++router = APIRouter(prefix="/api/settings", tags=["settings"])
++
++BYO_PROVIDERS = {p.value for p in LLMProvider}  # gemini, mistral, openrouter
++
++
++@router.get("/status", response_model=AccountStatus)
++async def get_status(
++    current_user: User = Depends(get_current_user),
++    db: AsyncSession = Depends(get_db),
++):
++    configured, missing, using_defaults = await config_resolution.account_status(db, current_user)
++    return AccountStatus(
++        configured_providers=configured,
++        missing_providers=missing,
++        using_defaults=using_defaults,
++    )
++
++
++# ------------------------------------------------------------- API keys
++
++@router.get("/keys", response_model=list[ApiKeyOut])
++async def list_keys(
++    current_user: User = Depends(get_current_user),
++    db: AsyncSession = Depends(get_db),
++):
++    result = await db.execute(select(UserApiKey).where(UserApiKey.user_id == current_user.id))
++    return [
++        ApiKeyOut(
++            provider=row.provider,
++            label=row.label,
++            last_used_at=row.last_used_at,
++            updated_at=row.updated_at,
++        )
++        for row in result.scalars().all()
++    ]
++
++
++@router.put("/keys/{provider}", response_model=ApiKeyOut, status_code=200)
++async def upsert_key(
++    provider: str,
++    body: ApiKeyIn,
++    current_user: User = Depends(get_current_user),
++    db: AsyncSession = Depends(get_db),
++):
++    if provider not in BYO_PROVIDERS:
++        raise HTTPException(
++            400,
++            f"'{provider}' is not a bring-your-own-key provider. "
++            f"Supported: {sorted(BYO_PROVIDERS)}. "
++            f"'groq' uses the platform's own key and never needs one from you.",
++        )
++
++    nonce, ciphertext = crypto.encrypt(body.api_key)
++
++    result = await db.execute(
++        select(UserApiKey).where(
++            UserApiKey.user_id == current_user.id, UserApiKey.provider == provider
++        )
++    )
++    row = result.scalar_one_or_none()
++    if row is None:
++        row = UserApiKey(
++            user_id=current_user.id, provider=provider,
++            encrypted_key=ciphertext, nonce=nonce, label=body.label,
++        )
++        db.add(row)
++    else:
++        row.encrypted_key = ciphertext
++        row.nonce = nonce
++        row.label = body.label
++
++    await db.commit()
++    await db.refresh(row)
++    return ApiKeyOut(
++        provider=row.provider, label=row.label,
++        last_used_at=row.last_used_at, updated_at=row.updated_at,
++    )
++
++
++@router.delete("/keys/{provider}", status_code=204)
++async def delete_key(
++    provider: str,
++    current_user: User = Depends(get_current_user),
++    db: AsyncSession = Depends(get_db),
++):
++    result = await db.execute(
++        select(UserApiKey).where(
++            UserApiKey.user_id == current_user.id, UserApiKey.provider == provider
++        )
++    )
++    row = result.scalar_one_or_none()
++    if row is None:
++        raise HTTPException(404, f"No key saved for provider '{provider}'")
++    await db.delete(row)
++    await db.commit()
++
++
++# --------------------------------------------------------- agent models
++
++@router.get("/agent-models", response_model=list[AgentModelOut])
++async def get_agent_models(
++    current_user: User = Depends(get_current_user),
++    db: AsyncSession = Depends(get_db),
++):
++    result = await db.execute(
++        select(AgentModelConfig).where(AgentModelConfig.user_id == current_user.id)
++    )
++    overrides = {row.agent_role: row for row in result.scalars().all()}
++
++    out = []
++    for role, model_key in DEFAULT_AGENT_MODELS.items():
++        row = overrides.get(role.value)
++        if row:
++            out.append(AgentModelOut(
++                agent_role=role.value, provider=row.provider,
++                model_name=row.model_name, is_default=False,
++            ))
++        else:
++            provider, model_name = model_key.split("/", 1)
++            out.append(AgentModelOut(
++                agent_role=role.value, provider=provider,
++                model_name=model_name, is_default=True,
++            ))
++    return out
++
++
++@router.put("/agent-models", response_model=list[AgentModelOut])
++async def set_agent_models(
++    body: AgentModelsIn,
++    current_user: User = Depends(get_current_user),
++    db: AsyncSession = Depends(get_db),
++):
++    updates = body.model_dump(exclude_none=True)
++    if not updates:
++        raise HTTPException(400, "No agent model fields provided")
++
++    valid_roles = {r.value for r in AgentRole}
++    for role, model_key in updates.items():
++        if role not in valid_roles:
++            raise HTTPException(400, f"Unknown agent role '{role}'")
++        if "/" not in model_key:
++            raise HTTPException(400, f"'{model_key}' must be in 'provider/model-name' format")
++        provider = model_key.split("/", 1)[0]
++        if provider not in SUPPORTED_PROVIDERS:
++            raise HTTPException(
++                400,
++                f"Unsupported provider '{provider}' for role '{role}'. "
++                f"Supported: {list(SUPPORTED_PROVIDERS)}",
++            )
++
++    for role, model_key in updates.items():
++        provider, model_name = model_key.split("/", 1)
++        result = await db.execute(
++            select(AgentModelConfig).where(
++                AgentModelConfig.user_id == current_user.id,
++                AgentModelConfig.agent_role == role,
++            )
++        )
++        row = result.scalar_one_or_none()
++        if row is None:
++            db.add(AgentModelConfig(
++                user_id=current_user.id, agent_role=role,
++                provider=provider, model_name=model_name,
++            ))
++        else:
++            row.provider = provider
++            row.model_name = model_name
++
++    await db.commit()
++    return await get_agent_models(current_user=current_user, db=db)
+diff --git a/web/run_manager.py b/web/run_manager.py
+index 7df01ff..7287964 100644
+--- a/web/run_manager.py
++++ b/web/run_manager.py
+@@ -1,48 +1,96 @@
+ """
+-Drives agents.graph.build_graph() in the background for the web UI.
+-
+-This mirrors run.py's console loop, but pushes each step into an
+-asyncio.Queue per run so a browser tab can subscribe to it over
+-Server-Sent Events instead of reading stdout.
++Drives agents.graph.build_graph() in the background for a specific
++user's run. Unlike the single-operator prototype, every run:
++
++- is attached to that user's resolved model/API-key config via
++  core.runtime.set_run_config(), scoped to this run's own asyncio Task
++  so concurrent users' runs never see each other's keys (see
++  core/runtime.py's docstring for why that's safe)
++- is persisted as a Run row (+ Thread/Message it belongs to, + one
++  RunEvent row per streamed message) so history survives a restart,
++  unlike the prototype's in-memory-only results
++- gets its coder output zipped for download if it wrote any files
+ """
+ from __future__ import annotations
+ 
+ import asyncio
+-import time
+ import uuid
+-from typing import Any
++from datetime import datetime, timezone
++
++from sqlalchemy import select
+ 
+ from agents.graph import build_graph
+ from agents.state import ResearchState
+ from core.memory import get_recent_runs, save_run_memory
++from core.runtime import RunConfig, reset_run_config, set_run_config
++from web.config_resolution import build_run_config
++from web.database import AsyncSessionLocal
++from web.models import Message, MessageRole, Run, RunEvent, RunEventType, RunStatus, RunType, Thread, User
++from web.zip_utils import zip_run_output
+ 
+ 
+ class RunManager:
+     def __init__(self) -> None:
+         self._queues: dict[str, asyncio.Queue] = {}
+-        self._results: dict[str, dict[str, Any]] = {}
+-        self._order: list[str] = []
+ 
+-    def start_run(self, goal: str, project_id: str | None = None) -> str:
+-        run_id = (project_id or "").strip() or f"web_{uuid.uuid4().hex[:8]}"
++    async def start_run(self, user: User, goal: str, thread_id: uuid.UUID | None) -> Run:
++        async with AsyncSessionLocal() as db:
++            thread = None
++            if thread_id is not None:
++                result = await db.execute(
++                    select(Thread).where(Thread.id == thread_id, Thread.user_id == user.id)
++                )
++                thread = result.scalar_one_or_none()
++                if thread is None:
++                    raise ValueError("Thread not found")
++
++            if thread is None:
++                thread = Thread(user_id=user.id, title=goal[:80])
++                db.add(thread)
++                await db.flush()
++
++            message = Message(thread_id=thread.id, role=MessageRole.user.value, content=goal)
++            db.add(message)
++            await db.flush()
++
++            run = Run(
++                thread_id=thread.id,
++                message_id=message.id,
++                goal=goal,
++                type=RunType.build.value,  # refined once the orchestrator's task list is known
++                status=RunStatus.queued.value,
++            )
++            db.add(run)
++            await db.commit()
++            await db.refresh(run)
++
++            run_config = await build_run_config(db, user)
++
+         queue: asyncio.Queue = asyncio.Queue()
+-        self._queues[run_id] = queue
+-        self._results[run_id] = {
+-            "status": "running",
+-            "goal": goal,
+-            "started_at": time.time(),
+-        }
+-        self._order.insert(0, run_id)
+-        asyncio.create_task(self._execute(run_id, goal))
+-        return run_id
+-
+-    async def _execute(self, run_id: str, goal: str) -> None:
+-        queue = self._queues[run_id]
+-
+-        async def emit(text: str) -> None:
+-            await queue.put({"type": "log", "text": text})
++        self._queues[str(run.id)] = queue
++        asyncio.create_task(self._execute(run.id, goal, run_config))
++        return run
++
++    async def _execute(self, run_id: uuid.UUID, goal: str, run_config: RunConfig) -> None:
++        queue = self._queues[str(run_id)]
++        token = set_run_config(run_config)
++
++        async def emit(text: str, agent: str | None = None) -> None:
++            await queue.put({"type": "log", "agent": agent, "text": text})
++            async with AsyncSessionLocal() as db:
++                db.add(RunEvent(
++                    run_id=run_id, agent=agent, content=text,
++                    event_type=RunEventType.agent_message.value,
++                ))
++                await db.commit()
+ 
+         try:
++            async with AsyncSessionLocal() as db:
++                result = await db.execute(select(Run).where(Run.id == run_id))
++                run = result.scalar_one()
++                run.status = RunStatus.running.value
++                await db.commit()
++
+             recent_runs = await get_recent_runs(n=3)
+             if recent_runs:
+                 await emit(f"Loaded memory from {len(recent_runs)} previous run(s).")
+@@ -56,20 +104,19 @@ class RunManager:
+                 "summary": None,
+                 "next_agent": "orchestrator",
+                 "error": None,
+-                "project_id": run_id,
++                "project_id": str(run_id),
+             }
+ 
+             await emit(f"Goal: {goal}")
+             compiled_graph = build_graph()
+ 
+-            final_state: dict[str, Any] | None = None
++            final_state: dict = {}
+             async for event in compiled_graph.astream(state, stream_mode="values"):
+                 final_state = event
+                 messages = event.get("messages", [])
+                 if messages:
+                     await emit(str(messages[-1].content))
+ 
+-            final_state = final_state or {}
+             summary_text = final_state.get("summary")
+             tasks = final_state.get("tasks", [])
+ 
+@@ -80,10 +127,16 @@ class RunManager:
+ 
+             written = [t.get("output_path") for t in tasks if t.get("output_path")]
+             flagged = [t for t in tasks if t.get("status") == "flagged"]
+-            competition = final_state.get("architecture_competition", {})
++            run_type = (
++                RunType.build.value
++                if any(t.get("agent") in ("architect", "coder") for t in tasks)
++                else RunType.research.value
++            )
++
++            zip_path = zip_run_output(str(run_id)) if written else None
+ 
+             await save_run_memory(
+-                project_id=run_id,
++                project_id=str(run_id),
+                 goal=goal,
+                 files=written,
+                 flagged=[t.get("title", "") for t in flagged],
+@@ -91,49 +144,48 @@ class RunManager:
+                 summary=summary_text or "",
+             )
+ 
+-            result = {
+-                "status": "done",
+-                "goal": goal,
+-                "summary": summary_text,
+-                "files_written": written,
+-                "tasks_by_status": by_status,
+-                "flagged": [
++            async with AsyncSessionLocal() as db:
++                result = await db.execute(select(Run).where(Run.id == run_id))
++                run = result.scalar_one()
++                run.status = RunStatus.done.value
++                run.type = run_type
++                run.summary = summary_text
++                run.task_summary = by_status
++                run.flagged_tasks = [
+                     {
+                         "title": t.get("title"),
+                         "output_path": t.get("output_path"),
+-                        "issues": t.get("critic_verdict", {}).get("issues", []),
+-                        "feedback": t.get("critic_verdict", {}).get("feedback", ""),
++                        "feedback": (t.get("critic_verdict") or {}).get("feedback", ""),
+                     }
+                     for t in flagged
+-                ],
+-                "competition": {
+-                    "winner": competition.get("winner"),
+-                    "justification": competition.get("verdict", {}).get("justification", ""),
+-                } if competition else None,
+-                "finished_at": time.time(),
+-            }
+-            self._results[run_id] = result
+-            await queue.put({"type": "done", "result": result})
+-        except Exception as exc:  # surfaced to the UI, run loop must not crash
+-            result = {
+-                "status": "error",
+-                "goal": goal,
+-                "error": f"{type(exc).__name__}: {exc}",
+-                "finished_at": time.time(),
+-            }
+-            self._results[run_id] = result
+-            await queue.put({"type": "error", "text": result["error"]})
++                ]
++                run.zip_path = zip_path
++                run.completed_at = datetime.now(timezone.utc)
++                await db.commit()
++
++            await queue.put({"type": "done", "run_id": str(run_id)})
++        except Exception as exc:
++            error_text = f"{type(exc).__name__}: {exc}"
++            async with AsyncSessionLocal() as db:
++                result = await db.execute(select(Run).where(Run.id == run_id))
++                run = result.scalar_one_or_none()
++                if run is not None:
++                    run.status = RunStatus.error.value
++                    run.error = error_text
++                    run.completed_at = datetime.now(timezone.utc)
++                    db.add(RunEvent(
++                        run_id=run_id, agent=None, content=error_text,
++                        event_type=RunEventType.error.value,
++                    ))
++                    await db.commit()
++            await queue.put({"type": "error", "text": error_text})
+         finally:
++            reset_run_config(token)
+             await queue.put(None)  # sentinel: closes the SSE stream
++            self._queues.pop(str(run_id), None)
+ 
+     def get_queue(self, run_id: str) -> asyncio.Queue | None:
+         return self._queues.get(run_id)
+ 
+-    def get_result(self, run_id: str) -> dict[str, Any] | None:
+-        return self._results.get(run_id)
+-
+-    def recent_run_ids(self, limit: int = 20) -> list[str]:
+-        return self._order[:limit]
+-
+ 
+ run_manager = RunManager()
+diff --git a/web/schemas.py b/web/schemas.py
+new file mode 100644
+index 0000000..8bec2fe
+--- /dev/null
++++ b/web/schemas.py
+@@ -0,0 +1,101 @@
++from __future__ import annotations
++
++import uuid
++from datetime import datetime
++from typing import Any, Optional
++
++from pydantic import BaseModel, ConfigDict, Field
++
++
++# ---------------------------------------------------------------- auth
++
++class UserOut(BaseModel):
++    model_config = ConfigDict(from_attributes=True)
++
++    id: uuid.UUID
++    email: str
++    name: Optional[str] = None
++    avatar_url: Optional[str] = None
++    provider: str
++
++
++class TokenResponse(BaseModel):
++    access_token: str
++    token_type: str = "bearer"
++    user: UserOut
++
++
++# ------------------------------------------------------------ settings
++
++class ApiKeyIn(BaseModel):
++    api_key: str = Field(min_length=1)
++    label: Optional[str] = None
++
++
++class ApiKeyOut(BaseModel):
++    provider: str
++    label: Optional[str] = None
++    last_used_at: Optional[datetime] = None
++    updated_at: datetime
++
++
++class AgentModelIn(BaseModel):
++    # "provider/model-name", e.g. "gemini/gemini-2.5-flash"
++    model: str = Field(min_length=1)
++
++
++class AgentModelsIn(BaseModel):
++    orchestrator: Optional[str] = None
++    researcher: Optional[str] = None
++    architect_a: Optional[str] = None
++    architect_b: Optional[str] = None
++    judge: Optional[str] = None
++    planner: Optional[str] = None
++    coder: Optional[str] = None
++    critic: Optional[str] = None
++    summarizer: Optional[str] = None
++
++
++class AgentModelOut(BaseModel):
++    agent_role: str
++    provider: str
++    model_name: str
++    is_default: bool  # true if this is the platform default, not a user override
++
++
++class AccountStatus(BaseModel):
++    configured_providers: list[str]
++    missing_providers: list[str]  # providers referenced by a custom agent model but with no key saved
++    using_defaults: bool          # true if the account has no custom agent models at all yet
++
++
++# ----------------------------------------------------------------- runs
++
++class RunCreate(BaseModel):
++    goal: str = Field(min_length=1)
++    thread_id: Optional[uuid.UUID] = None
++    run_type: Optional[str] = None  # "build" | "research"; auto-detected by the orchestrator if omitted
++
++
++class RunOut(BaseModel):
++    model_config = ConfigDict(from_attributes=True)
++
++    id: uuid.UUID
++    thread_id: uuid.UUID
++    goal: str
++    type: str
++    status: str
++    summary: Optional[str] = None
++    task_summary: Optional[dict[str, Any]] = None
++    flagged_tasks: Optional[Any] = None
++    error: Optional[str] = None
++    has_download: bool = False
++    created_at: datetime
++    completed_at: Optional[datetime] = None
++
++
++class RunEventOut(BaseModel):
++    agent: Optional[str] = None
++    content: str
++    event_type: str
++    created_at: datetime
+diff --git a/web/security.py b/web/security.py
+index c13e6a3..bed71d3 100644
+--- a/web/security.py
++++ b/web/security.py
+@@ -1,58 +1,60 @@
+ """
+-Minimal single-operator auth for the web UI.
+-
+-There is exactly one account, created on first visit ("setup-account"),
+-stored as a salted hash in .env via web/config_store.py. After that, every
+-request needs a valid signed session cookie to reach anything except the
+-login page.
++JWT-based auth. A user is only ever created via OAuth (see
++web/routes/auth.py) -- there's no password on the User model, matching
++this project's existing Google/GitHub login. Once a user exists, every
++other endpoint authenticates via a bearer JWT issued at OAuth callback
++time, not a session cookie.
+ """
+ from __future__ import annotations
+ 
+-import hashlib
+-import hmac
++import uuid
++from datetime import datetime, timedelta, timezone
+ 
+-from fastapi import Request
+-from starlette.responses import RedirectResponse
++import jwt
++from fastapi import Depends, HTTPException, status
++from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
++from sqlalchemy import select
++from sqlalchemy.ext.asyncio import AsyncSession
+ 
+ from core.config import settings
+-
+-
+-def hash_password(password: str) -> str:
+-    # Not meant to withstand a stolen-database attack at scale -- this is
+-    # a single-operator local/self-hosted tool. Salting with the app's
+-    # secret_key is enough to stop plain rainbow-table lookups.
+-    salted = f"{settings.secret_key}:{password}".encode("utf-8")
+-    return hashlib.sha256(salted).hexdigest()
+-
+-
+-def verify_password(password: str, password_hash: str) -> bool:
+-    return hmac.compare_digest(hash_password(password), password_hash)
+-
+-
+-def account_exists() -> bool:
+-    return bool(settings.web_username and settings.web_password_hash)
+-
+-
+-def is_logged_in(request: Request) -> bool:
+-    return bool(account_exists() and request.session.get("user") == settings.web_username)
+-
+-
+-def log_in(request: Request) -> None:
+-    request.session["user"] = settings.web_username
+-
+-
+-def log_out(request: Request) -> None:
+-    request.session.clear()
+-
+-
+-def guard(request: Request):
+-    """
+-    Call at the top of a protected route. Returns a RedirectResponse if
+-    the request should be bounced somewhere else, or None if it's fine to
+-    proceed.
+-    """
+-    if not account_exists():
+-        return RedirectResponse("/setup-account", status_code=303)
+-    if not is_logged_in(request):
+-        return RedirectResponse("/login", status_code=303)
+-    return None
++from web.database import get_db
++from web.models import User
++
++ALGORITHM = "HS256"
++_bearer = HTTPBearer(auto_error=False)
++
++
++def create_access_token(user_id: uuid.UUID) -> str:
++    expire = datetime.now(timezone.utc) + timedelta(minutes=settings.jwt_expire_minutes)
++    payload = {"sub": str(user_id), "exp": expire}
++    return jwt.encode(payload, settings.secret_key, algorithm=ALGORITHM)
++
++
++def decode_access_token(token: str) -> uuid.UUID:
++    try:
++        payload = jwt.decode(token, settings.secret_key, algorithms=[ALGORITHM])
++        return uuid.UUID(payload["sub"])
++    except (jwt.PyJWTError, KeyError, ValueError):
++        raise HTTPException(
++            status_code=status.HTTP_401_UNAUTHORIZED,
++            detail="Invalid or expired token",
++            headers={"WWW-Authenticate": "Bearer"},
++        )
++
++
++async def get_current_user(
++    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
++    db: AsyncSession = Depends(get_db),
++) -> User:
++    if credentials is None:
++        raise HTTPException(
++            status_code=status.HTTP_401_UNAUTHORIZED,
++            detail="Missing bearer token",
++            headers={"WWW-Authenticate": "Bearer"},
++        )
++    user_id = decode_access_token(credentials.credentials)
++    result = await db.execute(select(User).where(User.id == user_id))
++    user = result.scalar_one_or_none()
++    if user is None:
++        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User no longer exists")
++    return user
+diff --git a/web/static/style.css b/web/static/style.css
+deleted file mode 100644
+index 6beaea9..0000000
+--- a/web/static/style.css
++++ /dev/null
+@@ -1,145 +0,0 @@
+-:root {
+-  --bg: #0f1115;
+-  --bg-card: #171a21;
+-  --border: #262b36;
+-  --text: #e6e8ec;
+-  --muted: #8b93a3;
+-  --accent: #6ea8fe;
+-  --ok: #4ade80;
+-  --warn: #facc15;
+-  --error: #f87171;
+-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+-}
+-
+-* { box-sizing: border-box; }
+-
+-body {
+-  margin: 0;
+-  background: var(--bg);
+-  color: var(--text);
+-}
+-
+-.topbar {
+-  display: flex;
+-  justify-content: space-between;
+-  align-items: center;
+-  padding: 14px 24px;
+-  border-bottom: 1px solid var(--border);
+-}
+-
+-.topbar .brand {
+-  font-weight: 700;
+-  font-size: 1.1rem;
+-  color: var(--text);
+-  text-decoration: none;
+-}
+-
+-.topbar nav a {
+-  color: var(--muted);
+-  text-decoration: none;
+-  margin-left: 20px;
+-  font-size: .9rem;
+-}
+-
+-.topbar nav a:hover { color: var(--text); }
+-
+-.page {
+-  max-width: 780px;
+-  margin: 0 auto;
+-  padding: 32px 20px 80px;
+-}
+-
+-h1 { font-size: 1.6rem; margin-bottom: 4px; }
+-h2 { font-size: 1.1rem; margin-top: 0; }
+-.muted { color: var(--muted); }
+-.req { color: var(--warn); font-weight: 400; font-size: .8rem; }
+-code {
+-  background: #0000004d;
+-  padding: 1px 5px;
+-  border-radius: 4px;
+-  font-size: .85em;
+-}
+-
+-.card {
+-  background: var(--bg-card);
+-  border: 1px solid var(--border);
+-  border-radius: 10px;
+-  padding: 20px;
+-  margin: 20px 0;
+-}
+-
+-label {
+-  display: block;
+-  margin-bottom: 14px;
+-  font-size: .9rem;
+-}
+-
+-input[type=text], input[type=password], textarea {
+-  width: 100%;
+-  margin-top: 6px;
+-  padding: 9px 10px;
+-  border-radius: 6px;
+-  border: 1px solid var(--border);
+-  background: #0d0f14;
+-  color: var(--text);
+-  font-size: .95rem;
+-}
+-
+-textarea { resize: vertical; font-family: inherit; }
+-
+-.hint { display: block; color: var(--muted); font-size: .78rem; margin-top: 3px; }
+-
+-button {
+-  background: var(--accent);
+-  color: #0b0d12;
+-  border: none;
+-  border-radius: 8px;
+-  padding: 10px 18px;
+-  font-weight: 600;
+-  cursor: pointer;
+-  font-size: .95rem;
+-}
+-
+-button:hover { opacity: .9; }
+-
+-.auth-card {
+-  max-width: 380px;
+-  margin: 60px auto;
+-  background: var(--bg-card);
+-  border: 1px solid var(--border);
+-  border-radius: 12px;
+-  padding: 28px;
+-}
+-
+-.flash {
+-  padding: 10px 14px;
+-  border-radius: 8px;
+-  margin-bottom: 18px;
+-  font-size: .9rem;
+-}
+-.flash-error { background: #3a1a1a; color: var(--error); border: 1px solid #5c2626; }
+-.flash-warn  { background: #3a331a; color: var(--warn); border: 1px solid #5c4f26; }
+-.flash-ok    { background: #16321f; color: var(--ok); border: 1px solid #245c34; }
+-
+-.runs-table {
+-  width: 100%;
+-  border-collapse: collapse;
+-  font-size: .88rem;
+-}
+-.runs-table th, .runs-table td {
+-  text-align: left;
+-  padding: 8px 6px;
+-  border-bottom: 1px solid var(--border);
+-}
+-.runs-table a { color: var(--accent); text-decoration: none; }
+-
+-.log-box {
+-  background: #0a0c10;
+-  border-radius: 8px;
+-  padding: 14px;
+-  max-height: 420px;
+-  overflow-y: auto;
+-  white-space: pre-wrap;
+-  font-size: .82rem;
+-  line-height: 1.45;
+-}
+diff --git a/web/templates/_result.html b/web/templates/_result.html
+deleted file mode 100644
+index 66bee5d..0000000
+--- a/web/templates/_result.html
++++ /dev/null
+@@ -1,29 +0,0 @@
+-{% if result.status == "error" %}
+-  <p class="flash flash-error">Run failed: {{ result.error }}</p>
+-{% else %}
+-  {% if result.summary %}<p>{{ result.summary }}</p>{% endif %}
+-
+-  {% if result.competition %}
+-  <p><strong>Architecture winner:</strong> {{ result.competition.winner }} &mdash; {{ result.competition.justification }}</p>
+-  {% endif %}
+-
+-  <p><strong>Tasks:</strong>
+-    {% for status, count in result.tasks_by_status.items() %}{{ status }}: {{ count }}&nbsp; {% endfor %}
+-  </p>
+-
+-  {% if result.files_written %}
+-  <p><strong>Files written:</strong></p>
+-  <ul>{% for f in result.files_written %}<li><code>{{ f }}</code></li>{% endfor %}</ul>
+-  {% endif %}
+-
+-  {% if result.flagged %}
+-  <p><strong>Flagged for human review:</strong></p>
+-  <ul>
+-    {% for t in result.flagged %}
+-    <li><code>{{ t.output_path }}</code> &mdash; {{ t.title }}
+-      {% if t.feedback %}<br><span class="muted">{{ t.feedback }}</span>{% endif %}
+-    </li>
+-    {% endfor %}
+-  </ul>
+-  {% endif %}
+-{% endif %}
+diff --git a/web/templates/base.html b/web/templates/base.html
+deleted file mode 100644
+index 0cec7e5..0000000
+--- a/web/templates/base.html
++++ /dev/null
+@@ -1,26 +0,0 @@
+-<!doctype html>
+-<html lang="en">
+-<head>
+-  <meta charset="utf-8">
+-  <meta name="viewport" content="width=device-width, initial-scale=1">
+-  <title>{% block title %}ResearchOS{% endblock %}</title>
+-  <link rel="stylesheet" href="/static/style.css">
+-</head>
+-<body>
+-  {% if show_nav %}
+-  <header class="topbar">
+-    <a class="brand" href="/">ResearchOS</a>
+-    <nav>
+-      <a href="/">Dashboard</a>
+-      <a href="/settings">Settings</a>
+-      <a href="/logout">Log out</a>
+-    </nav>
+-  </header>
+-  {% endif %}
+-  <main class="page">
+-    {% if error %}<div class="flash flash-error">{{ error }}</div>{% endif %}
+-    {% if notice %}<div class="flash flash-ok">{{ notice }}</div>{% endif %}
+-    {% block content %}{% endblock %}
+-  </main>
+-</body>
+-</html>
+diff --git a/web/templates/dashboard.html b/web/templates/dashboard.html
+deleted file mode 100644
+index 197e9a3..0000000
+--- a/web/templates/dashboard.html
++++ /dev/null
+@@ -1,33 +0,0 @@
+-{% extends "base.html" %}
+-{% block title %}Dashboard · ResearchOS{% endblock %}
+-{% block content %}
+-<h1>New goal</h1>
+-<form method="post" action="/runs" class="run-form">
+-  <label>What should ResearchOS build or research?
+-    <textarea name="goal" rows="3" required placeholder="e.g. Build a REST API with FastAPI and PostgreSQL for a bookmarking app"></textarea>
+-  </label>
+-  <label>Project ID <span class="hint">(optional -- reuse one to resume/checkpoint a previous run)</span>
+-    <input type="text" name="project_id" placeholder="leave blank to auto-generate">
+-  </label>
+-  <button type="submit">Run</button>
+-</form>
+-
+-<h2>Recent runs</h2>
+-{% if recent_runs %}
+-<table class="runs-table">
+-  <thead><tr><th>Goal</th><th>Tasks</th><th>Files</th><th>Flagged</th></tr></thead>
+-  <tbody>
+-    {% for r in recent_runs %}
+-    <tr>
+-      <td><a href="/run/{{ r.project_id }}">{{ r.goal }}</a></td>
+-      <td>{% for status, count in r.task_summary.items() %}{{ status }}: {{ count }}&nbsp; {% endfor %}</td>
+-      <td>{{ r.files_written|length }}</td>
+-      <td>{{ r.flagged_tasks|length }}</td>
+-    </tr>
+-    {% endfor %}
+-  </tbody>
+-</table>
+-{% else %}
+-<p class="muted">No runs yet.</p>
+-{% endif %}
+-{% endblock %}
+diff --git a/web/templates/login.html b/web/templates/login.html
+deleted file mode 100644
+index 1a587bb..0000000
+--- a/web/templates/login.html
++++ /dev/null
+@@ -1,16 +0,0 @@
+-{% extends "base.html" %}
+-{% block title %}Log in · ResearchOS{% endblock %}
+-{% block content %}
+-<div class="auth-card">
+-  <h1>Log in</h1>
+-  <form method="post" action="/login">
+-    <label>Username
+-      <input type="text" name="username" required autofocus>
+-    </label>
+-    <label>Password
+-      <input type="password" name="password" required>
+-    </label>
+-    <button type="submit">Log in</button>
+-  </form>
+-</div>
+-{% endblock %}
+diff --git a/web/templates/run.html b/web/templates/run.html
+deleted file mode 100644
+index bbe930d..0000000
+--- a/web/templates/run.html
++++ /dev/null
+@@ -1,38 +0,0 @@
+-{% extends "base.html" %}
+-{% block title %}Run {{ run_id }} · ResearchOS{% endblock %}
+-{% block content %}
+-<h1>{{ goal }}</h1>
+-<p class="muted">Project ID: <code>{{ run_id }}</code></p>
+-
+-<section class="card">
+-  <h2>Log</h2>
+-  <pre id="log" class="log-box">{% for line in initial_log %}{{ line }}
+-{% endfor %}</pre>
+-</section>
+-
+-<section class="card" id="result-card" {% if not result %}hidden{% endif %}>
+-  <h2>Result</h2>
+-  <div id="result-body">
+-    {% if result %}{% include "_result.html" %}{% endif %}
+-  </div>
+-</section>
+-
+-{% if live %}
+-<script>
+-  const evtSource = new EventSource("/run/{{ run_id }}/events");
+-  const logBox = document.getElementById("log");
+-  evtSource.onmessage = (e) => {
+-    const data = JSON.parse(e.data);
+-    if (data.type === "log") {
+-      logBox.textContent += data.text + "\n";
+-      logBox.scrollTop = logBox.scrollHeight;
+-    } else if (data.type === "error") {
+-      logBox.textContent += "ERROR: " + data.text + "\n";
+-    } else if (data.type === "done") {
+-      window.location.reload();
+-    }
+-  };
+-  evtSource.addEventListener("end", () => evtSource.close());
+-</script>
+-{% endif %}
+-{% endblock %}
+diff --git a/web/templates/settings.html b/web/templates/settings.html
+deleted file mode 100644
+index 97646cc..0000000
+--- a/web/templates/settings.html
++++ /dev/null
+@@ -1,64 +0,0 @@
+-{% extends "base.html" %}
+-{% block title %}Settings · ResearchOS{% endblock %}
+-{% block content %}
+-<h1>Configuration</h1>
+-<p class="muted">
+-  Configure at least one LLM provider's API key, Tavily (required for web
+-  search), and pick which model powers each agent. Model strings use the
+-  format <code>provider/model-name</code> -- providers: groq, gemini,
+-  mistral, openrouter. Suggestions are offered but you can type any
+-  supported model string.
+-</p>
+-
+-{% if missing_keys %}
+-<div class="flash flash-warn">
+-  Missing API key(s) for provider(s) currently assigned to an agent: {{ missing_keys|join(", ") }}.
+-  Runs using those agents will fail until the key is added below.
+-</div>
+-{% endif %}
+-
+-<form method="post" action="/settings" class="settings-form">
+-  <section class="card">
+-    <h2>Provider API keys</h2>
+-    <label>Tavily API key <span class="req">(required -- web search)</span>
+-      <input type="password" name="tavily_api_key" value="{{ values.tavily_api_key }}" placeholder="tvly-...">
+-      <span class="hint">Get one at tavily.com &rarr; API Keys</span>
+-    </label>
+-    <label>GitHub token <span class="req">(required -- repo search)</span>
+-      <input type="password" name="github_token" value="{{ values.github_token }}" placeholder="github_pat_...">
+-      <span class="hint">github.com/settings/tokens -- fine-grained, read-only public repos</span>
+-    </label>
+-    <label>Groq API key
+-      <input type="password" name="groq_api_key" value="{{ values.groq_api_key }}" placeholder="gsk_...">
+-    </label>
+-    <label>Google (Gemini) API key
+-      <input type="password" name="google_api_key" value="{{ values.google_api_key }}" placeholder="AIza...">
+-    </label>
+-    <label>Mistral API key
+-      <input type="password" name="mistral_api_key" value="{{ values.mistral_api_key }}" placeholder="...">
+-    </label>
+-    <label>OpenRouter API key
+-      <input type="password" name="openrouter_api_key" value="{{ values.openrouter_api_key }}" placeholder="sk-or-...">
+-    </label>
+-    <label>LangSmith API key <span class="req">(optional -- tracing)</span>
+-      <input type="password" name="langchain_api_key" value="{{ values.langchain_api_key }}" placeholder="lsv2_...">
+-    </label>
+-  </section>
+-
+-  <section class="card">
+-    <h2>Model per agent</h2>
+-    {% for field, label in agent_labels.items() %}
+-    <label>{{ label }}
+-      <input type="text" name="{{ field }}" list="model-suggestions" value="{{ values[field] }}" placeholder="provider/model-name" required>
+-    </label>
+-    {% endfor %}
+-    <datalist id="model-suggestions">
+-      {% for provider, options in suggestions.items() %}
+-        {% for opt in options %}<option value="{{ opt }}">{% endfor %}
+-      {% endfor %}
+-    </datalist>
+-  </section>
+-
+-  <button type="submit">Save configuration</button>
+-</form>
+-{% endblock %}
+diff --git a/web/templates/setup_account.html b/web/templates/setup_account.html
+deleted file mode 100644
+index 94cba36..0000000
+--- a/web/templates/setup_account.html
++++ /dev/null
+@@ -1,20 +0,0 @@
+-{% extends "base.html" %}
+-{% block title %}Create account · ResearchOS{% endblock %}
+-{% block content %}
+-<div class="auth-card">
+-  <h1>Welcome to ResearchOS</h1>
+-  <p class="muted">No account exists yet on this deployment. Create the login you'll use to access this instance. Only one account is needed.</p>
+-  <form method="post" action="/setup-account">
+-    <label>Username
+-      <input type="text" name="username" required autofocus>
+-    </label>
+-    <label>Password
+-      <input type="password" name="password" required minlength="6">
+-    </label>
+-    <label>Confirm password
+-      <input type="password" name="confirm_password" required minlength="6">
+-    </label>
+-    <button type="submit">Create account &amp; continue</button>
+-  </form>
+-</div>
+-{% endblock %}
+diff --git a/web/zip_utils.py b/web/zip_utils.py
+new file mode 100644
+index 0000000..6169636
+--- /dev/null
++++ b/web/zip_utils.py
+@@ -0,0 +1,30 @@
++from __future__ import annotations
++
++import os
++import zipfile
++from pathlib import Path
++
++from core.config import settings
++
++
++def zip_run_output(run_id: str) -> str | None:
++    """
++    Zips <output_dir>/<run_id>/ (where the coder agent writes files --
++    see agents/coder_agent.py's _resolve_output_path) into
++    <downloads_dir>/<run_id>.zip. Returns the zip path, or None if the
++    run produced no files (e.g. a research-only run).
++    """
++    source_dir = Path(settings.output_dir).resolve() / run_id
++    if not source_dir.is_dir() or not any(source_dir.rglob("*")):
++        return None
++
++    downloads_dir = Path(settings.downloads_dir).resolve()
++    downloads_dir.mkdir(parents=True, exist_ok=True)
++    zip_path = downloads_dir / f"{run_id}.zip"
++
++    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
++        for file_path in source_dir.rglob("*"):
++            if file_path.is_file():
++                zf.write(file_path, arcname=str(file_path.relative_to(source_dir)))
++
++    return str(zip_path)
+-- 
+2.43.0
+

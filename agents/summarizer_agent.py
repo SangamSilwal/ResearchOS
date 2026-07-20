@@ -3,11 +3,13 @@ from langchain_core.messages import AIMessage
 from agents.base_agent import BaseAgent
 from agents.state import ResearchState
 from core.config import settings
+from core.runtime import resolve_model
 
 class SummarizerAgent(BaseAgent):
 
     def __init__(self):
-        super().__init__(settings.summarizer_model)
+        model_key, api_key = resolve_model("summarizer_model", settings.summarizer_model)
+        super().__init__(model_key, api_key)
 
     def system_prompt(self) -> str:
         return """

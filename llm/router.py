@@ -1,4 +1,3 @@
-import os
 from langchain_core.language_models import BaseChatModel
 from langchain_mistralai import ChatMistralAI
 from langchain_groq import ChatGroq
@@ -7,35 +6,20 @@ from langchain_openrouter import ChatOpenRouter
 from core.config import settings
 
 
-def sync_provider_env() -> None:
-    """
-    Push the current values of `settings` into os.environ.
-
-    This used to run once at import time, which meant provider API keys
-    were frozen the moment this module was first imported. The web UI
-    lets a user save new keys after the process has already started, so
-    this is now called from get_llm() on every invocation to make sure
-    each newly-constructed LLM client picks up the latest keys.
-    """
-    os.environ["GROQ_API_KEY"] = settings.groq_api_key
-    os.environ["GOOGLE_API_KEY"] = settings.google_api_key
-    os.environ["MISTRAL_API_KEY"] = settings.mistral_api_key
-    os.environ["LANGCHAIN_TRACING_V2"] = str(settings.langchain_tracing_v2).lower()
-    os.environ["LANGCHAIN_API_KEY"] = settings.langchain_api_key
-    os.environ["LANGCHAIN_PROJECT"] = settings.langchain_project
-    os.environ["OPENROUTER_API_KEY"] = settings.openrouter_api_key
-
-
-# Keep the same behavior for existing callers (CLI/tests) that import this
-# module and expect the environment to already be populated.
-sync_provider_env()
-
-
-def get_llm(model_key: str) -> BaseChatModel:
+def get_llm(model_key: str, api_key: str | None = None) -> BaseChatModel:
     """
     Format: "provider/model-name"
+
+    api_key: an explicit per-call key (e.g. a decrypted BYO key resolved
+    for the current user/run via core.runtime.resolve_model()). When
+    omitted, falls back to the platform's own key for that provider from
+    core.config.settings -- this is what run.py (the CLI) always does.
+
+    The key is always passed as a constructor argument, never through
+    os.environ: several requests for different users can be in flight on
+    the same process at once, and mutating a process-global env var to
+    pick a key for one of them would leak into the others.
     """
-    sync_provider_env()
     provider, model_name = model_key.split("/", 1)
 
     if provider == "groq":
@@ -43,6 +27,7 @@ def get_llm(model_key: str) -> BaseChatModel:
             model=model_name,
             temperature=0.1,
             max_retries=3,
+            api_key=api_key or settings.groq_api_key,
         )
 
     if provider == "gemini":
@@ -50,6 +35,7 @@ def get_llm(model_key: str) -> BaseChatModel:
             model=model_name,
             temperature=0.1,
             max_retries=3,
+            google_api_key=api_key or settings.google_api_key,
         )
 
     if provider == "mistral":
@@ -57,16 +43,18 @@ def get_llm(model_key: str) -> BaseChatModel:
             model=model_name,
             temperature=0.1,
             max_retries=3,
+            api_key=api_key or settings.mistral_api_key,
         )
 
     if provider == "openrouter":
         return ChatOpenRouter(
             model=model_name,
             temperature=0.1,
-            max_retries=3
+            max_retries=3,
+            api_key=api_key or settings.openrouter_api_key,
         )
 
     raise ValueError(
         f"Unknown provider '{provider}'. "
-        f"Supported: groq, gemini, mistral. Got: '{model_key}'"
+        f"Supported: groq, gemini, mistral, openrouter. Got: '{model_key}'"
     )

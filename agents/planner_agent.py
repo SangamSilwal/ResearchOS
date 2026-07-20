@@ -3,11 +3,13 @@ from agents.base_agent import BaseAgent
 from agents.state import ResearchState
 from core.config import settings
 from core.memory import get_recent_runs
+from core.runtime import resolve_model
 
 class PlannerAgent(BaseAgent):
 
     def __init__(self):
-        super().__init__(settings.planner_model)
+        model_key, api_key = resolve_model("planner_model", settings.planner_model)
+        super().__init__(model_key, api_key)
 
     def system_prompt(self) -> str:
         return """

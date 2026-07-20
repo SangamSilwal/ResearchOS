@@ -6,6 +6,7 @@ from agents.base_agent import BaseAgent
 from agents.state import ResearchState
 from core.config import settings
 from core.memory import get_recent_runs
+from core.runtime import resolve_model
 
  
 ARCHITECT_SYSTEM_PROMPT = """
@@ -96,8 +97,8 @@ def parse_design(raw_content: str) -> dict:
 
 class ArchitectProposer(BaseAgent):
 
-    def __init__(self, model_name:str, proposer_id:str):
-        super().__init__(model_name)
+    def __init__(self, model_name:str, proposer_id:str, api_key: str | None = None):
+        super().__init__(model_name, api_key)
         self.proposer_id = proposer_id
         self.model_name = model_name
 
@@ -155,8 +156,8 @@ fences:
 
 class ArchitectJudge(BaseAgent):
 
-    def __init__(self, model_name:str):
-        super().__init__(model_name)
+    def __init__(self, model_name:str, api_key: str | None = None):
+        super().__init__(model_name, api_key)
 
     def system_prompt(self) -> str:
         return JUDGE_SYSTEM_PROMPT
@@ -208,9 +209,13 @@ class ArchitectJudge(BaseAgent):
         return verdict
 
 async def architect_node(state: ResearchState) -> dict:
-    proposer_a = ArchitectProposer(settings.architect_model_a, proposer_id="A")
-    proposer_b = ArchitectProposer(settings.architect_model_b, proposer_id="B")
-    judge = ArchitectJudge(settings.architect_judge_model)
+    model_a, key_a = resolve_model("architect_model_a", settings.architect_model_a)
+    model_b, key_b = resolve_model("architect_model_b", settings.architect_model_b)
+    model_j, key_j = resolve_model("architect_judge_model", settings.architect_judge_model)
+
+    proposer_a = ArchitectProposer(model_a, proposer_id="A", api_key=key_a)
+    proposer_b = ArchitectProposer(model_b, proposer_id="B", api_key=key_b)
+    judge = ArchitectJudge(model_j, api_key=key_j)
 
     design_a, design_b = await asyncio.gather(
         proposer_a.run(state),
