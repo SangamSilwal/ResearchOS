@@ -94,25 +94,26 @@ def _sqlite_recent(n: int) -> list[dict]:
 
 
 
+_RUN_MEMORY_TABLE_SQL = """
+    CREATE TABLE IF NOT EXISTS run_memory (
+        project_id   TEXT PRIMARY KEY,
+        goal         TEXT NOT NULL,
+        created_at   DOUBLE PRECISION NOT NULL,
+        files_written JSONB NOT NULL,
+        flagged_tasks JSONB NOT NULL,
+        task_summary  JSONB NOT NULL,
+        summary       TEXT NOT NULL
+    )
+"""
+
+
 async def _pg_save(database_url: str, project_id: str, goal: str,
                    files: list[str], flagged: list[str], task_summary: dict, summary: str) -> None:
     import asyncpg
 
     conn = await asyncpg.connect(database_url)
     try:
-        await conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS run_memory (
-                project_id   TEXT PRIMARY KEY,
-                goal         TEXT NOT NULL,
-                created_at   DOUBLE PRECISION NOT NULL,
-                files_written JSONB NOT NULL,
-                flagged_tasks JSONB NOT NULL,
-                task_summary  JSONB NOT NULL,
-                summary       TEXT NOT NULL
-            )
-            """
-        )
+        await conn.execute(_RUN_MEMORY_TABLE_SQL)
         await conn.execute(
             """
             INSERT INTO run_memory
@@ -138,6 +139,7 @@ async def _pg_recent(database_url: str, n: int) -> list[dict]:
 
     conn = await asyncpg.connect(database_url)
     try:
+        await conn.execute(_RUN_MEMORY_TABLE_SQL)
         rows = await conn.fetch(
             """
             SELECT project_id, goal, created_at, files_written,
