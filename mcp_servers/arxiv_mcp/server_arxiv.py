@@ -3,7 +3,7 @@ import arxiv
 from mcp.server.fastmcp import FastMCP
 
 HOST = os.getenv("MCP_HOST", "0.0.0.0")
-PORT = int(os.getenv("MCP_PORT", "8001"))
+PORT = int(os.getenv("MCP_PORT", "5051"))
 
 mcp = FastMCP("arxiv_search", host=HOST, port=PORT)
 _client = arxiv.Client()
