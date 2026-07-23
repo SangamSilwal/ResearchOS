@@ -12,7 +12,7 @@ from web.database import get_db
 from web.models import Run, RunEvent, Thread, User
 from web.run_manager import run_manager
 from web.schemas import RunCreate, RunEventOut, RunOut
-from web.security import get_current_user
+from web.security import get_current_user, get_current_user_sse
 
 router = APIRouter(prefix="/api/runs", tags=["runs"])
 
@@ -95,7 +95,7 @@ async def get_run_events(
 @router.get("/{run_id}/stream")
 async def stream_run(
     run_id: uuid.UUID,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user_sse),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -103,6 +103,14 @@ async def stream_run(
     events live. If it already finished (or this process restarted and
     lost the in-memory queue), replays the persisted history once and
     closes -- either way the client gets the full event log.
+
+    Frames are emitted with an explicit `event:` name matching the item's
+    `type` so browser-side `EventSource.addEventListener('log' | 'done', ...)`
+    listeners actually fire (SSE frames with no `event:` line default to
+    the "message" event, which the frontend does not listen for). "error"
+    items are also sent as `event: log` -- the client tells them apart via
+    the JSON `type` field -- to avoid colliding with EventSource's own
+    reserved, connection-level "error" event.
     """
     run = await _get_owned_run(run_id, current_user, db)
     queue = run_manager.get_queue(str(run_id))
@@ -113,8 +121,11 @@ async def stream_run(
                 select(RunEvent).where(RunEvent.run_id == run_id).order_by(RunEvent.created_at)
             )
             for e in result.scalars().all():
-                yield f"data: {json.dumps({'type': 'log', 'agent': e.agent, 'text': e.content})}\n\n"
-            yield f"data: {json.dumps({'type': 'done' if run.status == 'done' else 'error', 'run_id': str(run_id)})}\n\n"
+                payload = json.dumps({"type": "log", "agent": e.agent, "text": e.content})
+                yield f"event: log\ndata: {payload}\n\n"
+            final_type = "done" if run.status == "done" else "error"
+            payload = json.dumps({"type": final_type, "run_id": str(run_id)})
+            yield f"event: done\ndata: {payload}\n\n"
             yield "event: end\ndata: {}\n\n"
             return
 
@@ -123,7 +134,8 @@ async def stream_run(
             if item is None:
                 yield "event: end\ndata: {}\n\n"
                 break
-            yield f"data: {json.dumps(item)}\n\n"
+            sse_event = "done" if item.get("type") == "done" else "log"
+            yield f"event: {sse_event}\ndata: {json.dumps(item)}\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 

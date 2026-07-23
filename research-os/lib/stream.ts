@@ -36,9 +36,12 @@ export function subscribeToRunStream(
     eventSource.addEventListener('log', (event) => {
       try {
         const data = JSON.parse(event.data)
+        // Backend sends the log/error text in a `text` field, and both
+        // "log" and "error" items arrive on this same named SSE event
+        // (see web/routes/runs.py) -- the JSON `type` field tells them apart.
         onMessage({
-          type: 'log',
-          content: data.content || data.message,
+          type: data.type === 'error' ? 'error' : 'log',
+          content: data.text,
           agent: data.agent,
         })
       } catch (e) {

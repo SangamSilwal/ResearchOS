@@ -11,7 +11,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 import jwt
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Query, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -53,6 +53,32 @@ async def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
     user_id = decode_access_token(credentials.credentials)
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User no longer exists")
+    return user
+
+
+async def get_current_user_sse(
+    token: str | None = Query(default=None),
+    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
+    db: AsyncSession = Depends(get_db),
+) -> User:
+    """
+    Same as get_current_user, but also accepts the JWT via a `token` query
+    parameter. Needed specifically for the SSE stream endpoint: the
+    browser's EventSource API cannot set an Authorization header, so the
+    frontend has no way to send a bearer token there other than the URL.
+    """
+    raw_token = credentials.credentials if credentials is not None else token
+    if raw_token is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing bearer token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    user_id = decode_access_token(raw_token)
     result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
     if user is None:
