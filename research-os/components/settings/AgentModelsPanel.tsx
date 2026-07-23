@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { getAgentModels, setAgentModels } from '@/lib/api'
+import { getAgentModels, setAgentModels, AgentModelConfig } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 
@@ -17,11 +17,6 @@ const AGENT_ROLES = [
   'optimizer',
 ]
 
-interface AgentModel {
-  provider: string
-  model: string
-}
-
 interface EditingModel {
   role: string
   provider: string
@@ -29,7 +24,8 @@ interface EditingModel {
 }
 
 export function AgentModelsPanel() {
-  const [models, setModels] = useState<Record<string, AgentModel>>({})
+  // Keep the raw backend dict (keyed by index) as the source of truth
+  const [rawModels, setRawModels] = useState<Record<string, AgentModelConfig>>({})
   const [isLoading, setIsLoading] = useState(true)
   const [editingRole, setEditingRole] = useState<EditingModel | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -43,7 +39,7 @@ export function AgentModelsPanel() {
     try {
       setIsLoading(true)
       const data = await getAgentModels()
-      setModels(data || {})
+      setRawModels(data || {})
       setError(null)
     } catch (err) {
       console.error('[v0] Error fetching models:', err)
@@ -51,6 +47,22 @@ export function AgentModelsPanel() {
     } finally {
       setIsLoading(false)
     }
+  }
+
+  // Helper: find the entry (and its key) for a given role, if any
+  const findEntryForRole = (role: string) => {
+    const entry = Object.entries(rawModels).find(
+      ([, v]) => v.agent_role === role
+    )
+    return entry ? { key: entry[0], value: entry[1] } : null
+  }
+
+  const nextFreeKey = () => {
+    const numericKeys = Object.keys(rawModels)
+      .map((k) => parseInt(k, 10))
+      .filter((n) => !isNaN(n))
+    const max = numericKeys.length ? Math.max(...numericKeys) : -1
+    return String(max + 1)
   }
 
   const handleSaveModel = async () => {
@@ -62,15 +74,22 @@ export function AgentModelsPanel() {
     try {
       setIsLoading(true)
       setError(null)
-      const updatedModels = {
-        ...models,
-        [editingRole.role]: {
+
+      const existing = findEntryForRole(editingRole.role)
+      const key = existing ? existing.key : nextFreeKey()
+
+      const updatedModels: Record<string, AgentModelConfig> = {
+        ...rawModels,
+        [key]: {
+          agent_role: editingRole.role,
           provider: editingRole.provider.trim(),
-          model: editingRole.model.trim(),
+          model_name: editingRole.model.trim(),
+          is_default: existing?.value.is_default ?? false,
         },
       }
+
       await setAgentModels(updatedModels)
-      setModels(updatedModels)
+      setRawModels(updatedModels)
       setSuccess(`${editingRole.role} model updated`)
       setEditingRole(null)
     } catch (err) {
@@ -87,10 +106,14 @@ export function AgentModelsPanel() {
     try {
       setIsLoading(true)
       setError(null)
-      const updatedModels = { ...models }
-      delete updatedModels[role]
+      const existing = findEntryForRole(role)
+      if (!existing) return
+
+      const updatedModels = { ...rawModels }
+      delete updatedModels[existing.key]
+
       await setAgentModels(updatedModels)
-      setModels(updatedModels)
+      setRawModels(updatedModels)
       setSuccess(`${role} model cleared`)
     } catch (err) {
       console.error('[v0] Error clearing model:', err)
@@ -122,10 +145,10 @@ export function AgentModelsPanel() {
         </div>
       )}
 
-      {/* Model Assignment Table */}
       <div className="space-y-3">
         {AGENT_ROLES.map((role) => {
-          const model = models[role]
+          const entry = findEntryForRole(role)
+          const model = entry?.value
           const isEditing = editingRole?.role === role
 
           return (
@@ -137,7 +160,7 @@ export function AgentModelsPanel() {
                 <p className="font-semibold capitalize">{role}</p>
                 {model && (
                   <p className="text-sm text-muted-foreground">
-                    {model.provider}/{model.model}
+                    {model.provider}/{model.model_name}
                   </p>
                 )}
               </div>
@@ -148,10 +171,7 @@ export function AgentModelsPanel() {
                     placeholder="provider"
                     value={editingRole.provider}
                     onChange={(e) =>
-                      setEditingRole({
-                        ...editingRole,
-                        provider: e.target.value,
-                      })
+                      setEditingRole({ ...editingRole, provider: e.target.value })
                     }
                     className="flex-1"
                   />
@@ -159,27 +179,14 @@ export function AgentModelsPanel() {
                     placeholder="model"
                     value={editingRole.model}
                     onChange={(e) =>
-                      setEditingRole({
-                        ...editingRole,
-                        model: e.target.value,
-                      })
+                      setEditingRole({ ...editingRole, model: e.target.value })
                     }
                     className="flex-1"
                   />
-                  <Button
-                    size="sm"
-                    variant="default"
-                    onClick={handleSaveModel}
-                    disabled={isLoading}
-                  >
+                  <Button size="sm" variant="default" onClick={handleSaveModel} disabled={isLoading}>
                     Save
                   </Button>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => setEditingRole(null)}
-                    disabled={isLoading}
-                  >
+                  <Button size="sm" variant="outline" onClick={() => setEditingRole(null)} disabled={isLoading}>
                     Cancel
                   </Button>
                 </div>
@@ -192,7 +199,7 @@ export function AgentModelsPanel() {
                       setEditingRole({
                         role,
                         provider: model?.provider || '',
-                        model: model?.model || '',
+                        model: model?.model_name || '',
                       })
                     }
                     disabled={isLoading}
@@ -200,12 +207,7 @@ export function AgentModelsPanel() {
                     {model ? 'Edit' : 'Assign'}
                   </Button>
                   {model && (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => handleClearModel(role)}
-                      disabled={isLoading}
-                    >
+                    <Button size="sm" variant="outline" onClick={() => handleClearModel(role)} disabled={isLoading}>
                       Clear
                     </Button>
                   )}

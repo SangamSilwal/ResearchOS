@@ -2,8 +2,7 @@
 
 import { Button } from '@/components/ui/button'
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://127.0.0.1:8080'
-
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8080'
 export function LoginForm() {
   const handleOAuth = (provider: 'google' | 'github') => {
     const redirectUrl = `${API_BASE_URL}/auth/${provider}/login`
