@@ -218,3 +218,6 @@ __marimo__/
 .streamlit/secrets.toml
 .langgraph_api
 workspace/
+
+!research-os/lib/
+!research-os/lib/**
