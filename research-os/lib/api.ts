@@ -185,23 +185,22 @@ export interface AgentModelConfig {
 }
 
 /**
- * Get configured agent models.
- * Backend returns a list of { agent_role, provider, model_name, is_default }.
+ * Get configured agent models
  */
-export async function getAgentModels(): Promise<AgentModelConfig[]> {
+export async function getAgentModels(): Promise<
+  Record<string, AgentModelConfig>
+> {
   return apiRequest('/api/settings/agent-models')
 }
 
 /**
- * Update agent models.
- * Each key must be a valid agent role (see AgentRole in web/models.py) and
- * each value must be a "provider/model-name" string, e.g. "mistral/mistral-small".
+ * Update agent models
  */
 export async function setAgentModels(
-  updates: Partial<Record<string, string>>
-): Promise<AgentModelConfig[]> {
-  return apiRequest('/api/settings/agent-models', {
+  models: Record<string, AgentModelConfig>
+): Promise<void> {
+  await apiRequest('/api/settings/agent-models', {
     method: 'PUT',
-    body: JSON.stringify(updates),
+    body: JSON.stringify(models),
   })
 }
