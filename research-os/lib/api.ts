@@ -177,23 +177,31 @@ export async function deleteApiKey(provider: string): Promise<void> {
   })
 }
 
+export interface AgentModelConfig {
+  agent_role: string
+  provider: string
+  model_name: string
+  is_default: boolean
+}
+
 /**
- * Get configured agent models
+ * Get configured agent models.
+ * Backend returns a list of { agent_role, provider, model_name, is_default }.
  */
-export async function getAgentModels(): Promise<
-  Record<string, { provider: string; model: string }>
-> {
+export async function getAgentModels(): Promise<AgentModelConfig[]> {
   return apiRequest('/api/settings/agent-models')
 }
 
 /**
- * Update agent models
+ * Update agent models.
+ * Each key must be a valid agent role (see AgentRole in web/models.py) and
+ * each value must be a "provider/model-name" string, e.g. "mistral/mistral-small".
  */
 export async function setAgentModels(
-  models: Record<string, { provider: string; model: string }>
-): Promise<void> {
-  await apiRequest('/api/settings/agent-models', {
+  updates: Partial<Record<string, string>>
+): Promise<AgentModelConfig[]> {
+  return apiRequest('/api/settings/agent-models', {
     method: 'PUT',
-    body: JSON.stringify(models),
+    body: JSON.stringify(updates),
   })
 }

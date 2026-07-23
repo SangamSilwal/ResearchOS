@@ -5,16 +5,17 @@ import { getAgentModels, setAgentModels, AgentModelConfig } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 
+// Must match the backend's AgentRole enum (web/models.py)
 const AGENT_ROLES = [
+  'orchestrator',
   'researcher',
-  'writer',
-  'analyzer',
-  'coder',
-  'reviewer',
+  'architect_a',
+  'architect_b',
+  'judge',
   'planner',
-  'executor',
-  'validator',
-  'optimizer',
+  'coder',
+  'critic',
+  'summarizer',
 ]
 
 interface EditingModel {
@@ -24,8 +25,7 @@ interface EditingModel {
 }
 
 export function AgentModelsPanel() {
-  // Keep the raw backend dict (keyed by index) as the source of truth
-  const [rawModels, setRawModels] = useState<Record<string, AgentModelConfig>>({})
+  const [models, setModels] = useState<Record<string, AgentModelConfig>>({})
   const [isLoading, setIsLoading] = useState(true)
   const [editingRole, setEditingRole] = useState<EditingModel | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -35,11 +35,19 @@ export function AgentModelsPanel() {
     fetchModels()
   }, [])
 
+  const toRoleMap = (entries: AgentModelConfig[]): Record<string, AgentModelConfig> => {
+    const byRole: Record<string, AgentModelConfig> = {}
+    for (const entry of entries || []) {
+      byRole[entry.agent_role] = entry
+    }
+    return byRole
+  }
+
   const fetchModels = async () => {
     try {
       setIsLoading(true)
       const data = await getAgentModels()
-      setRawModels(data || {})
+      setModels(toRoleMap(data))
       setError(null)
     } catch (err) {
       console.error('[v0] Error fetching models:', err)
@@ -47,22 +55,6 @@ export function AgentModelsPanel() {
     } finally {
       setIsLoading(false)
     }
-  }
-
-  // Helper: find the entry (and its key) for a given role, if any
-  const findEntryForRole = (role: string) => {
-    const entry = Object.entries(rawModels).find(
-      ([, v]) => v.agent_role === role
-    )
-    return entry ? { key: entry[0], value: entry[1] } : null
-  }
-
-  const nextFreeKey = () => {
-    const numericKeys = Object.keys(rawModels)
-      .map((k) => parseInt(k, 10))
-      .filter((n) => !isNaN(n))
-    const max = numericKeys.length ? Math.max(...numericKeys) : -1
-    return String(max + 1)
   }
 
   const handleSaveModel = async () => {
@@ -75,49 +67,16 @@ export function AgentModelsPanel() {
       setIsLoading(true)
       setError(null)
 
-      const existing = findEntryForRole(editingRole.role)
-      const key = existing ? existing.key : nextFreeKey()
+      // Backend expects { [role]: "provider/model-name" }
+      const modelKey = `${editingRole.provider.trim()}/${editingRole.model.trim()}`
+      const data = await setAgentModels({ [editingRole.role]: modelKey })
 
-      const updatedModels: Record<string, AgentModelConfig> = {
-        ...rawModels,
-        [key]: {
-          agent_role: editingRole.role,
-          provider: editingRole.provider.trim(),
-          model_name: editingRole.model.trim(),
-          is_default: existing?.value.is_default ?? false,
-        },
-      }
-
-      await setAgentModels(updatedModels)
-      setRawModels(updatedModels)
+      setModels(toRoleMap(data))
       setSuccess(`${editingRole.role} model updated`)
       setEditingRole(null)
     } catch (err) {
       console.error('[v0] Error saving model:', err)
       setError('Failed to save agent model')
-    } finally {
-      setIsLoading(false)
-    }
-  }
-
-  const handleClearModel = async (role: string) => {
-    if (!confirm(`Clear ${role} model assignment?`)) return
-
-    try {
-      setIsLoading(true)
-      setError(null)
-      const existing = findEntryForRole(role)
-      if (!existing) return
-
-      const updatedModels = { ...rawModels }
-      delete updatedModels[existing.key]
-
-      await setAgentModels(updatedModels)
-      setRawModels(updatedModels)
-      setSuccess(`${role} model cleared`)
-    } catch (err) {
-      console.error('[v0] Error clearing model:', err)
-      setError('Failed to clear agent model')
     } finally {
       setIsLoading(false)
     }
@@ -145,10 +104,10 @@ export function AgentModelsPanel() {
         </div>
       )}
 
+      {/* Model Assignment Table */}
       <div className="space-y-3">
         {AGENT_ROLES.map((role) => {
-          const entry = findEntryForRole(role)
-          const model = entry?.value
+          const model = models[role]
           const isEditing = editingRole?.role === role
 
           return (
@@ -157,10 +116,11 @@ export function AgentModelsPanel() {
               className="flex items-center justify-between p-4 border border-border rounded bg-secondary/30"
             >
               <div className="flex-1">
-                <p className="font-semibold capitalize">{role}</p>
+                <p className="font-semibold capitalize">{role.replace(/_/g, ' ')}</p>
                 {model && (
                   <p className="text-sm text-muted-foreground">
                     {model.provider}/{model.model_name}
+                    {model.is_default && ' (default)'}
                   </p>
                 )}
               </div>
@@ -171,7 +131,10 @@ export function AgentModelsPanel() {
                     placeholder="provider"
                     value={editingRole.provider}
                     onChange={(e) =>
-                      setEditingRole({ ...editingRole, provider: e.target.value })
+                      setEditingRole({
+                        ...editingRole,
+                        provider: e.target.value,
+                      })
                     }
                     className="flex-1"
                   />
@@ -179,14 +142,27 @@ export function AgentModelsPanel() {
                     placeholder="model"
                     value={editingRole.model}
                     onChange={(e) =>
-                      setEditingRole({ ...editingRole, model: e.target.value })
+                      setEditingRole({
+                        ...editingRole,
+                        model: e.target.value,
+                      })
                     }
                     className="flex-1"
                   />
-                  <Button size="sm" variant="default" onClick={handleSaveModel} disabled={isLoading}>
+                  <Button
+                    size="sm"
+                    variant="default"
+                    onClick={handleSaveModel}
+                    disabled={isLoading}
+                  >
                     Save
                   </Button>
-                  <Button size="sm" variant="outline" onClick={() => setEditingRole(null)} disabled={isLoading}>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => setEditingRole(null)}
+                    disabled={isLoading}
+                  >
                     Cancel
                   </Button>
                 </div>
@@ -204,13 +180,8 @@ export function AgentModelsPanel() {
                     }
                     disabled={isLoading}
                   >
-                    {model ? 'Edit' : 'Assign'}
+                    {model && !model.is_default ? 'Edit' : 'Assign'}
                   </Button>
-                  {model && (
-                    <Button size="sm" variant="outline" onClick={() => handleClearModel(role)} disabled={isLoading}>
-                      Clear
-                    </Button>
-                  )}
                 </div>
               )}
             </div>
