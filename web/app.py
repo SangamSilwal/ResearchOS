@@ -40,7 +40,12 @@ app = FastAPI(title="ResearchOS API", lifespan=lifespan)
 # Only used transiently during the OAuth login handshake (Authlib stores
 # state/nonce here) -- actual API auth is the JWT bearer token issued at
 # the end of that handshake, not this cookie. See web/routes/auth.py.
-app.add_middleware(SessionMiddleware, secret_key=settings.secret_key or "dev-secret-key",same_site="lax")
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=settings.secret_key or "dev-secret-key",
+    same_site="lax",   # works fine for same-site-ish localhost dev
+    https_only=False,
+)
 
 _allow_origins = [settings.frontend_url] if settings.frontend_url else ["*"]
 app.add_middleware(
